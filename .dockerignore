@@ -1,0 +1,9 @@
+.git
+.gitignore
+.DS_Store
+data
+tmp
+web/node_modules
+web/node_modules.stale.*
+web/dist
+*.log

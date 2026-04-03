@@ -1,0 +1,9 @@
+data/
+tmp/
+web/dist/
+web/node_modules/
+*.log
+*.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
