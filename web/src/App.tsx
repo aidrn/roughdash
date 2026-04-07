@@ -30,6 +30,16 @@ type GroupDraft = {
   transcode: boolean
 }
 
+type IngestDraft = {
+  helperId: string
+  pathsText: string
+  moveFiles: boolean
+  verifyHash: boolean
+  targetMode: 'camera' | 'project'
+  basePath: string
+  projectFolder: string
+}
+
 const routes: Array<{ key: Route; label: string }> = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'ingest', label: 'Ingest' },
@@ -40,6 +50,8 @@ const routes: Array<{ key: Route; label: string }> = [
 ]
 
 const DEFAULT_NAS_ROOT = '/mnt/Main/AIDEN'
+const INGEST_DRAFT_KEY = 'roughdash.ingest.draft'
+const DOWNLOADS_DRAFT_KEY = 'roughdash.downloads.draft'
 
 function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
@@ -331,14 +343,15 @@ function DashboardPage({ onToast }: { onToast: (message: string) => void }) {
 }
 
 function IngestPage({ onToast }: { onToast: (message: string) => void }) {
-  const [helperId, setHelperId] = useState('local')
+  const initialDraft = loadPersistent<IngestDraft>(INGEST_DRAFT_KEY, defaultIngestDraft())
+  const [helperId, setHelperId] = useState(initialDraft.helperId)
   const [helpers, setHelpers] = useState<Helper[]>([])
-  const [pathsText, setPathsText] = useState('')
-  const [moveFiles, setMoveFiles] = useState(false)
-  const [verifyHash, setVerifyHash] = useState(false)
-  const [targetMode, setTargetMode] = useState<'camera' | 'project'>('camera')
-  const [basePath, setBasePath] = useState(DEFAULT_NAS_ROOT)
-  const [projectFolder, setProjectFolder] = useState('')
+  const [pathsText, setPathsText] = useState(initialDraft.pathsText)
+  const [moveFiles, setMoveFiles] = useState(initialDraft.moveFiles)
+  const [verifyHash, setVerifyHash] = useState(initialDraft.verifyHash)
+  const [targetMode, setTargetMode] = useState<'camera' | 'project'>(initialDraft.targetMode)
+  const [basePath, setBasePath] = useState(initialDraft.basePath)
+  const [projectFolder, setProjectFolder] = useState(initialDraft.projectFolder)
   const [preview, setPreview] = useState<IngestPreview | null>(null)
   const [browsePath, setBrowsePath] = useState('/')
   const [entries, setEntries] = useState<FileEntry[]>([])
@@ -346,9 +359,26 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
 
   useEffect(() => {
     void api<{ helpers: Helper[] }>('/api/helpers')
-      .then((response) => setHelpers(response.helpers))
+      .then((response) => {
+        setHelpers(response.helpers)
+        if (!response.helpers.some((helper) => helper.id === helperId)) {
+          setHelperId('local')
+        }
+      })
       .catch((error: Error) => onToast(error.message))
-  }, [onToast])
+  }, [helperId, onToast])
+
+  useEffect(() => {
+    savePersistent(INGEST_DRAFT_KEY, {
+      helperId,
+      pathsText,
+      moveFiles,
+      verifyHash,
+      targetMode,
+      basePath,
+      projectFolder,
+    } satisfies IngestDraft)
+  }, [helperId, pathsText, moveFiles, verifyHash, targetMode, basePath, projectFolder])
 
   useEffect(() => {
     const targetHelper = browseMode === 'target' ? 'local' : helperId
@@ -406,6 +436,19 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
     } catch (error) {
       onToast((error as Error).message)
     }
+  }
+
+  function resetDraft() {
+    const draft = defaultIngestDraft()
+    setHelperId(draft.helperId)
+    setPathsText(draft.pathsText)
+    setMoveFiles(draft.moveFiles)
+    setVerifyHash(draft.verifyHash)
+    setTargetMode(draft.targetMode)
+    setBasePath(draft.basePath)
+    setProjectFolder(draft.projectFolder)
+    setPreview(null)
+    clearPersistent(INGEST_DRAFT_KEY)
   }
 
   return (
@@ -467,6 +510,9 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
               <span>Verify checksums after copy</span>
             </label>
             <div className="row-actions">
+              <button className="ghost-button" type="button" onClick={resetDraft}>
+                Reset
+              </button>
               <button className="secondary-button" type="button" onClick={previewJob}>
                 Preview ingest
               </button>
@@ -558,10 +604,14 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
 }
 
 function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
-  const [groups, setGroups] = useState<GroupDraft[]>([
-    { name: 'Poland', basePath: DEFAULT_NAS_ROOT, newFolder: 'Poland', linksText: '', transcode: true },
-  ])
+  const [groups, setGroups] = useState<GroupDraft[]>(() =>
+    loadPersistent<GroupDraft[]>(DOWNLOADS_DRAFT_KEY, defaultDownloadGroups()),
+  )
   const [preview, setPreview] = useState<DownloadPreview | null>(null)
+
+  useEffect(() => {
+    savePersistent(DOWNLOADS_DRAFT_KEY, groups)
+  }, [groups])
 
   function updateGroup(index: number, patch: Partial<GroupDraft>) {
     setGroups((current) => current.map((group, currentIndex) => (currentIndex === index ? { ...group, ...patch } : group)))
@@ -606,6 +656,12 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
     } catch (error) {
       onToast((error as Error).message)
     }
+  }
+
+  function resetDraft() {
+    setGroups(defaultDownloadGroups())
+    setPreview(null)
+    clearPersistent(DOWNLOADS_DRAFT_KEY)
   }
 
   return (
@@ -658,6 +714,9 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
             </div>
           ))}
           <div className="row-actions">
+            <button className="ghost-button" type="button" onClick={resetDraft}>
+              Reset
+            </button>
             <button className="secondary-button" type="button" onClick={previewJob}>
               Preview downloads
             </button>
@@ -1199,6 +1258,30 @@ function appendLine(current: string, value: string) {
   return current.trim() ? `${current}\n${value}` : value
 }
 
+function defaultIngestDraft(): IngestDraft {
+  return {
+    helperId: 'local',
+    pathsText: '',
+    moveFiles: false,
+    verifyHash: false,
+    targetMode: 'camera',
+    basePath: DEFAULT_NAS_ROOT,
+    projectFolder: '',
+  }
+}
+
+function defaultDownloadGroups(): GroupDraft[] {
+  return [
+    {
+      name: 'Poland',
+      basePath: DEFAULT_NAS_ROOT,
+      newFolder: 'Poland',
+      linksText: '',
+      transcode: true,
+    },
+  ]
+}
+
 function normalizeFolderPath(value: string) {
   const normalized = value.trim().replace(/\/+$/, '')
   return normalized || '/'
@@ -1229,6 +1312,35 @@ function formatBytes(value: number) {
     unit += 1
   }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+
+function loadPersistent<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) {
+      return fallback
+    }
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
+
+function savePersistent(key: string, value: unknown) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(key, JSON.stringify(value))
+}
+
+function clearPersistent(key: string) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.removeItem(key)
 }
 
 export default App
