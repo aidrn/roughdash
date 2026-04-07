@@ -6,7 +6,7 @@
 
 - Go backend monolith with:
   - bootstrap setup
-  - password + TOTP login
+  - password login
   - SQLite persistence
   - audit log
   - helper pairing and remote browse

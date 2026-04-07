@@ -369,7 +369,7 @@ func (s *Store) ListHelpers(ctx context.Context) ([]models.Helper, error) {
 	}
 	defer rows.Close()
 
-	var helpers []models.Helper
+	helpers := []models.Helper{}
 	for rows.Next() {
 		var helper models.Helper
 		var lastSeen, revoked sql.NullTime
@@ -473,7 +473,7 @@ func (s *Store) ListJobs(ctx context.Context) ([]models.Job, error) {
 	}
 	defer rows.Close()
 
-	var jobs []models.Job
+	jobs := []models.Job{}
 	for rows.Next() {
 		var job models.Job
 		if err := rows.Scan(&job.ID, &job.Type, &job.Status, &job.Summary, &job.Error, &job.Progress, &job.Payload, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt); err != nil {
@@ -498,7 +498,7 @@ func (s *Store) ListRunnableJobs(ctx context.Context) ([]models.Job, error) {
 	}
 	defer rows.Close()
 
-	var jobs []models.Job
+	jobs := []models.Job{}
 	for rows.Next() {
 		var job models.Job
 		if err := rows.Scan(&job.ID, &job.Type, &job.Status, &job.Summary, &job.Error, &job.Progress, &job.Payload, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt); err != nil {
@@ -537,7 +537,7 @@ func (s *Store) ListJobEvents(ctx context.Context, jobID string) ([]models.JobEv
 	}
 	defer rows.Close()
 
-	var events []models.JobEvent
+	events := []models.JobEvent{}
 	for rows.Next() {
 		var event models.JobEvent
 		if err := rows.Scan(&event.ID, &event.JobID, &event.Level, &event.Message, &event.CreatedAt); err != nil {
@@ -594,7 +594,7 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]models.AuditEntry, 
 	}
 	defer rows.Close()
 
-	var entries []models.AuditEntry
+	entries := []models.AuditEntry{}
 	for rows.Next() {
 		var entry models.AuditEntry
 		if err := rows.Scan(&entry.ID, &entry.Action, &entry.Actor, &entry.Target, &entry.Details, &entry.CreatedAt); err != nil {
@@ -648,10 +648,10 @@ func (s *Store) ExportSnapshot(ctx context.Context) (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"jobs":     jobs,
-		"audit":    audit,
-		"settings": settings,
-		"helpers":  helpers,
+		"jobs":       jobs,
+		"audit":      audit,
+		"settings":   settings,
+		"helpers":    helpers,
 		"exportedAt": time.Now().UTC(),
 	}, nil
 }

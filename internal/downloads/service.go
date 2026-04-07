@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"roughdash/internal/config"
@@ -22,27 +23,27 @@ type Service struct {
 }
 
 type ytMetadata struct {
-	ID                 string        `json:"id"`
-	Title              string        `json:"title"`
-	Channel            string        `json:"channel"`
-	Uploader           string        `json:"uploader"`
-	UploadDate         string        `json:"upload_date"`
-	Description        string        `json:"description"`
-	WebpageURL         string        `json:"webpage_url"`
-	PlaylistTitle      string        `json:"playlist_title"`
-	Height             int           `json:"height"`
-	FPS                float64       `json:"fps"`
-	Thumbnail          string        `json:"thumbnail"`
-	Subtitles          map[string]any `json:"subtitles"`
-	AutomaticCaptions  map[string]any `json:"automatic_captions"`
-	Entries            []ytMetadata  `json:"entries"`
+	ID                string         `json:"id"`
+	Title             string         `json:"title"`
+	Channel           string         `json:"channel"`
+	Uploader          string         `json:"uploader"`
+	UploadDate        string         `json:"upload_date"`
+	Description       string         `json:"description"`
+	WebpageURL        string         `json:"webpage_url"`
+	PlaylistTitle     string         `json:"playlist_title"`
+	Height            int            `json:"height"`
+	FPS               float64        `json:"fps"`
+	Thumbnail         string         `json:"thumbnail"`
+	Subtitles         map[string]any `json:"subtitles"`
+	AutomaticCaptions map[string]any `json:"automatic_captions"`
+	Entries           []ytMetadata   `json:"entries"`
 }
 
 type ResolvedGroup struct {
-	Name       string               `json:"name"`
-	TargetPath string               `json:"targetPath"`
-	Videos     []ResolvedVideo      `json:"videos"`
-	Transcode  bool                 `json:"transcode"`
+	Name       string          `json:"name"`
+	TargetPath string          `json:"targetPath"`
+	Videos     []ResolvedVideo `json:"videos"`
+	Transcode  bool            `json:"transcode"`
 }
 
 type ResolvedVideo struct {
@@ -130,7 +131,7 @@ func (s *Service) Download(ctx context.Context, group ResolvedGroup, video Resol
 		"--convert-subs", "srt",
 		video.Link,
 	}
-	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	cmd := ytDLPCommand(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -280,7 +281,7 @@ func loadMetadata(ctx context.Context, link string, noPlaylist bool) (ytMetadata
 	if noPlaylist {
 		args = append([]string{"--no-playlist"}, args...)
 	}
-	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	cmd := ytDLPCommand(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -338,4 +339,11 @@ func lastNonEmptyLine(value string) string {
 		}
 	}
 	return ""
+}
+
+func ytDLPCommand(ctx context.Context, args ...string) *exec.Cmd {
+	if runtime.GOOS == "linux" {
+		return exec.CommandContext(ctx, "python3", append([]string{"-m", "yt_dlp"}, args...)...)
+	}
+	return exec.CommandContext(ctx, "yt-dlp", args...)
 }

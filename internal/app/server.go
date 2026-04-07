@@ -32,8 +32,8 @@ type ctxKey string
 const userKey ctxKey = "user"
 
 type eventHub struct {
-	mu    sync.Mutex
-	subs  map[chan []byte]struct{}
+	mu   sync.Mutex
+	subs map[chan []byte]struct{}
 }
 
 func newEventHub() *eventHub {
@@ -129,7 +129,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("POST /api/setup", s.handleSetup)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
-	mux.HandleFunc("POST /api/totp/verify", s.handleTOTPVerify)
 	mux.HandleFunc("POST /api/logout", s.authRequired(s.handleLogout))
 	mux.HandleFunc("GET /api/events", s.authRequired(s.handleEvents))
 
@@ -230,22 +229,26 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	secret, url, err := auth.NewTOTPSecret(request.Username)
+	user, err := s.store.CreateUser(ctx, strings.TrimSpace(request.Username), hash, "", models.UserRoleAdmin)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	user, err := s.store.CreateUser(ctx, strings.TrimSpace(request.Username), hash, secret, models.UserRoleAdmin)
+	session, err := s.store.CreateSession(ctx, user.ID, s.cfg.SessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	_ = s.store.RecordAudit(ctx, "setup.completed", user.Username, user.ID, map[string]any{"username": user.Username})
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"user":    user,
-		"totpUrl": url,
-		"secret":  secret,
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cfg.SessionCookieName,
+		Value:    session.ID,
+		HttpOnly: true,
+		Path:     "/",
+		SameSite: http.SameSiteLaxMode,
+		Expires:  session.ExpiresAt,
 	})
+	writeJSON(w, http.StatusCreated, map[string]any{"user": user})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -263,53 +266,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
-	challenge, err := s.store.CreateLoginChallenge(ctx, user.ID, s.cfg.LoginChallengeTTL)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	_ = s.store.RecordAudit(ctx, "auth.password_ok", user.Username, user.ID, nil)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"challengeId": challenge.ID,
-		"requiresTOTP": true,
-	})
-}
-
-func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var request struct {
-		ChallengeID string `json:"challengeId"`
-		Code        string `json:"code"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	challenge, err := s.store.GetLoginChallenge(ctx, request.ChallengeID)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("invalid challenge"))
-		return
-	}
-	if challenge.ExpiresAt.Before(time.Now().UTC()) {
-		_ = s.store.DeleteLoginChallenge(ctx, challenge.ID)
-		writeError(w, http.StatusUnauthorized, errors.New("challenge expired"))
-		return
-	}
-	user, err := s.store.GetUserByID(ctx, challenge.UserID)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("user not found"))
-		return
-	}
-	if !auth.VerifyTOTP(user.TOTPSecret, strings.TrimSpace(request.Code)) {
-		writeError(w, http.StatusUnauthorized, errors.New("invalid verification code"))
-		return
-	}
 	session, err := s.store.CreateSession(ctx, user.ID, s.cfg.SessionTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	_ = s.store.DeleteLoginChallenge(ctx, challenge.ID)
 	_ = s.store.RecordAudit(ctx, "auth.login", user.Username, user.ID, nil)
 
 	http.SetCookie(w, &http.Cookie{

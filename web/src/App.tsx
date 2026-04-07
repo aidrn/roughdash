@@ -39,10 +39,13 @@ const routes: Array<{ key: Route; label: string }> = [
   { key: 'settings', label: 'Settings / Audit' },
 ]
 
+const DEFAULT_NAS_ROOT = '/mnt/Main/AIDEN'
+
 function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [route, setRoute] = useState<Route>(routeFromPath(window.location.pathname))
   const [toast, setToast] = useState('')
+  const activeRoute = routes.find((entry) => entry.key === route) ?? routes[0]
 
   useEffect(() => {
     void refreshStatus()
@@ -83,57 +86,81 @@ function App() {
   }
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand__title">roughdash</div>
-          <div className="brand__subtitle">video ops dashboard</div>
-        </div>
-        <nav className="nav">
-          {routes.map((entry) => (
-            <button
-              key={entry.key}
-              type="button"
-              className={`nav__item ${route === entry.key ? 'is-active' : ''}`}
-              onClick={() => navigate(entry.key)}
-            >
-              <span>{entry.label}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar__footer">
-          <div className="pill">signed in as {auth.user.username}</div>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={async () => {
-              await api<Record<string, never>>('/api/logout', { method: 'POST' })
-              setAuth({ setupRequired: false })
-              setToast('')
-            }}
-          >
-            Logout
-          </button>
-        </div>
-      </aside>
-      <main className="content">
-        {toast ? <div className="toast">{toast}</div> : null}
-        {route === 'dashboard' ? <DashboardPage onToast={setToast} /> : null}
-        {route === 'ingest' ? <IngestPage onToast={setToast} /> : null}
-        {route === 'downloads' ? <DownloadsPage onToast={setToast} /> : null}
-        {route === 'helpers' ? <HelpersPage onToast={setToast} /> : null}
-        {route === 'jobs' ? <JobsPage onToast={setToast} /> : null}
-        {route === 'settings' ? <SettingsPage onToast={setToast} /> : null}
-      </main>
+    <div className="desktop">
+      <div className="shell">
+        <aside className="window window--sidebar window--sidebar-nav">
+          <div className="window__body sidebar">
+            <div className="brand">
+              <div className="brand__title">roughdash</div>
+              <div className="brand__subtitle">media desk for {auth.user.username}</div>
+            </div>
+            <nav className="nav">
+              {routes.map((entry) => (
+                <button
+                  key={entry.key}
+                  type="button"
+                  className={`nav__item ${route === entry.key ? 'is-active' : ''}`}
+                  onClick={() => navigate(entry.key)}
+                >
+                  <span>{entry.label}</span>
+                </button>
+              ))}
+            </nav>
+            <div className="sidebar__footer">
+              <div className="pill">Signed in as {auth.user.username}</div>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={async () => {
+                  await api<Record<string, never>>('/api/logout', { method: 'POST' })
+                  setAuth({ setupRequired: false })
+                  setToast('')
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </aside>
+        <main className="window window--main">
+          <div className="window__titlebar">
+            <div className="titlebar-controls">
+              <span />
+              <span />
+            </div>
+            <span>{activeRoute.label}</span>
+          </div>
+          <div className="window__body content">
+            {toast ? <div className="toast">{toast}</div> : null}
+            {route === 'dashboard' ? <DashboardPage onToast={setToast} /> : null}
+            {route === 'ingest' ? <IngestPage onToast={setToast} /> : null}
+            {route === 'downloads' ? <DownloadsPage onToast={setToast} /> : null}
+            {route === 'helpers' ? <HelpersPage onToast={setToast} /> : null}
+            {route === 'jobs' ? <JobsPage onToast={setToast} /> : null}
+            {route === 'settings' ? <SettingsPage onToast={setToast} /> : null}
+          </div>
+        </main>
+      </div>
     </div>
   )
 }
 
 function Splash({ message }: { message: string }) {
   return (
-    <div className="auth-shell">
-      <div className="auth-card">
-        <h1>{message}</h1>
+    <div className="desktop desktop--auth">
+      <div className="auth-shell">
+        <div className="window auth-card">
+          <div className="window__titlebar">
+            <div className="titlebar-controls">
+              <span />
+              <span />
+            </div>
+            <span>Launching roughdash</span>
+          </div>
+          <div className="window__body auth-card__body">
+            <h1>{message}</h1>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -151,21 +178,18 @@ function AuthScreen({
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [bootstrapSecret, setBootstrapSecret] = useState('roughdash-bootstrap')
-  const [setupData, setSetupData] = useState<{ secret: string; totpUrl: string } | null>(null)
-  const [challengeId, setChallengeId] = useState('')
-  const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function runSetup(event: FormEvent) {
     event.preventDefault()
     setBusy(true)
     try {
-      const response = await api<{ secret: string; totpUrl: string }>('/api/setup', {
+      await api<{ user: User }>('/api/setup', {
         method: 'POST',
         body: JSON.stringify({ bootstrapSecret, username, password }),
       })
-      setSetupData(response)
-      onToast('Setup complete. Save the TOTP secret, then sign in.')
+      await onAuthed()
+      onToast('Setup complete.')
     } catch (error) {
       onToast((error as Error).message)
     } finally {
@@ -177,25 +201,9 @@ function AuthScreen({
     event.preventDefault()
     setBusy(true)
     try {
-      const response = await api<{ challengeId: string }>('/api/login', {
+      await api<{ user: User }>('/api/login', {
         method: 'POST',
         body: JSON.stringify({ username, password }),
-      })
-      setChallengeId(response.challengeId)
-    } catch (error) {
-      onToast((error as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function runTOTP(event: FormEvent) {
-    event.preventDefault()
-    setBusy(true)
-    try {
-      await api<Record<string, never>>('/api/totp/verify', {
-        method: 'POST',
-        body: JSON.stringify({ challengeId, code }),
       })
       await onAuthed()
     } catch (error) {
@@ -206,73 +214,65 @@ function AuthScreen({
   }
 
   return (
-    <div className="auth-shell">
-      <div className="auth-card auth-card--wide">
-        <div className="auth-intro">
-          <div className="eyebrow">roughdash</div>
-          <h1>Single-user media operations hub</h1>
-          <p>
-            App login with TOTP, server-side queueing, NAS-local yt-dlp/transcode,
-            and helper pairing are all wired from this surface.
-          </p>
-        </div>
-        <div className="auth-grid">
-          {setupRequired ? (
-            <section className="panel">
-              <h2>Bootstrap</h2>
-              <form className="stack" onSubmit={runSetup}>
-                <label>
-                  <span>Bootstrap secret</span>
-                  <input value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} />
-                </label>
-                <label>
-                  <span>Admin username</span>
-                  <input value={username} onChange={(event) => setUsername(event.target.value)} />
-                </label>
-                <label>
-                  <span>Password</span>
-                  <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-                </label>
-                <button className="primary-button" type="submit" disabled={busy}>
-                  Initialize roughdash
-                </button>
-              </form>
-              {setupData ? (
-                <div className="terminal-block">
-                  <div>TOTP secret: {setupData.secret}</div>
-                  <div>otpauth URL: {setupData.totpUrl}</div>
-                </div>
+    <div className="desktop desktop--auth">
+      <div className="auth-shell">
+        <div className="window auth-card auth-card--wide">
+          <div className="window__titlebar">
+            <div className="titlebar-controls">
+              <span />
+              <span />
+            </div>
+            <span>{setupRequired ? 'Welcome to roughdash' : 'Authenticate roughdash'}</span>
+          </div>
+          <div className="window__body auth-card__body">
+            <div className="auth-intro">
+              <h1>Single-user media operations desk</h1>
+              <p>
+                Bootstrap the admin account, then sign into the queue and helper control
+                surface.
+              </p>
+            </div>
+            <div className="auth-grid">
+              {setupRequired ? (
+                <section className="panel">
+                  <h2>Bootstrap</h2>
+                  <form className="stack" onSubmit={runSetup}>
+                    <label>
+                      <span>Bootstrap secret</span>
+                      <input value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Admin username</span>
+                      <input value={username} onChange={(event) => setUsername(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Password</span>
+                      <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+                    </label>
+                    <button className="primary-button" type="submit" disabled={busy}>
+                      Initialize roughdash
+                    </button>
+                  </form>
+                </section>
               ) : null}
-            </section>
-          ) : null}
-          <section className="panel">
-            <h2>{challengeId ? 'Second factor' : 'Sign in'}</h2>
-            {!challengeId ? (
-              <form className="stack" onSubmit={runLogin}>
-                <label>
-                  <span>Username</span>
-                  <input value={username} onChange={(event) => setUsername(event.target.value)} />
-                </label>
-                <label>
-                  <span>Password</span>
-                  <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-                </label>
-                <button className="primary-button" type="submit" disabled={busy}>
-                  Continue
-                </button>
-              </form>
-            ) : (
-              <form className="stack" onSubmit={runTOTP}>
-                <label>
-                  <span>TOTP code</span>
-                  <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="123456" />
-                </label>
-                <button className="primary-button" type="submit" disabled={busy}>
-                  Verify and enter
-                </button>
-              </form>
-            )}
-          </section>
+              <section className="panel">
+                <h2>Sign in</h2>
+                <form className="stack" onSubmit={runLogin}>
+                  <label>
+                    <span>Username</span>
+                    <input value={username} onChange={(event) => setUsername(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+                  </label>
+                  <button className="primary-button" type="submit" disabled={busy}>
+                    Continue
+                  </button>
+                </form>
+              </section>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -292,19 +292,21 @@ function DashboardPage({ onToast }: { onToast: (message: string) => void }) {
     return <Page title="Dashboard" subtitle="Loading cluster state..." />
   }
 
+  const helpers = data.helpers ?? []
+
   return (
     <Page title="Dashboard" subtitle="Single-user queue and helper overview">
       <div className="card-grid">
         <StatCard label="Active jobs" value={String(data.activeJobs)} />
         <StatCard label="Total jobs" value={String(data.totalJobs)} />
-        <StatCard label="Helpers online" value={String(data.helpers.filter((item) => item.online).length)} />
+        <StatCard label="Helpers online" value={String(helpers.filter((item) => item.online).length)} />
         <StatCard label="NAS root" value={data.nasRoot} wide />
       </div>
       <div className="two-column">
         <section className="panel">
           <h2>Connected machines</h2>
           <div className="table">
-            {data.helpers.map((helper) => (
+            {helpers.map((helper) => (
               <div key={helper.id} className="table__row">
                 <span>{helper.name}</span>
                 <span>{helper.platform}</span>
@@ -335,7 +337,7 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
   const [moveFiles, setMoveFiles] = useState(false)
   const [verifyHash, setVerifyHash] = useState(false)
   const [targetMode, setTargetMode] = useState<'camera' | 'project'>('camera')
-  const [basePath, setBasePath] = useState('/mnt/Main/AIDEN')
+  const [basePath, setBasePath] = useState(DEFAULT_NAS_ROOT)
   const [projectFolder, setProjectFolder] = useState('')
   const [preview, setPreview] = useState<IngestPreview | null>(null)
   const [browsePath, setBrowsePath] = useState('/')
@@ -350,9 +352,10 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
 
   useEffect(() => {
     const targetHelper = browseMode === 'target' ? 'local' : helperId
+    const path = browseMode === 'target' ? normalizeFolderPath(browsePath === '/' ? DEFAULT_NAS_ROOT : browsePath) : browsePath
     void api<{ entries: FileEntry[] }>(`/api/helpers/${targetHelper}/browse`, {
       method: 'POST',
-      body: JSON.stringify({ path: browsePath, mode: browseMode }),
+      body: JSON.stringify({ path, mode: browseMode }),
     })
       .then((response) => setEntries(response.entries))
       .catch((error: Error) => onToast(error.message))
@@ -439,10 +442,7 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
             </div>
             {targetMode === 'project' ? (
               <>
-                <label>
-                  <span>Base path</span>
-                  <input value={basePath} onChange={(event) => setBasePath(event.target.value)} />
-                </label>
+                <FolderPicker label="Base path" value={basePath} onChange={setBasePath} />
                 <label>
                   <span>Project folder</span>
                   <input value={projectFolder} onChange={(event) => setProjectFolder(event.target.value)} placeholder="Poland / Australia / client-name" />
@@ -487,14 +487,20 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
             <button
               type="button"
               className={browseMode === 'source' ? 'chip chip--active' : 'chip'}
-              onClick={() => setBrowseMode('source')}
+              onClick={() => {
+                setBrowseMode('source')
+                setBrowsePath('/')
+              }}
             >
               Source
             </button>
             <button
               type="button"
               className={browseMode === 'target' ? 'chip chip--active' : 'chip'}
-              onClick={() => setBrowseMode('target')}
+              onClick={() => {
+                setBrowseMode('target')
+                setBrowsePath(basePath || DEFAULT_NAS_ROOT)
+              }}
             >
               Target
             </button>
@@ -553,7 +559,7 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
 
 function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
   const [groups, setGroups] = useState<GroupDraft[]>([
-    { name: 'Poland', basePath: '/mnt/Main/AIDEN', newFolder: 'Poland', linksText: '', transcode: true },
+    { name: 'Poland', basePath: DEFAULT_NAS_ROOT, newFolder: 'Poland', linksText: '', transcode: true },
   ])
   const [preview, setPreview] = useState<DownloadPreview | null>(null)
 
@@ -613,7 +619,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
             onClick={() =>
               setGroups((current) => [
                 ...current,
-                { name: '', basePath: '/mnt/Main/AIDEN', newFolder: '', linksText: '', transcode: true },
+                { name: '', basePath: DEFAULT_NAS_ROOT, newFolder: '', linksText: '', transcode: true },
               ])
             }
           >
@@ -627,10 +633,11 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
                 <span>Group label</span>
                 <input value={group.name} onChange={(event) => updateGroup(index, { name: event.target.value })} />
               </label>
-              <label>
-                <span>Base path</span>
-                <input value={group.basePath} onChange={(event) => updateGroup(index, { basePath: event.target.value })} />
-              </label>
+              <FolderPicker
+                label="Base path"
+                value={group.basePath}
+                onChange={(value) => updateGroup(index, { basePath: value })}
+              />
               <label>
                 <span>New folder (optional)</span>
                 <input value={group.newFolder} onChange={(event) => updateGroup(index, { newFolder: event.target.value })} />
@@ -1012,12 +1019,129 @@ function Page({
     <div className="page">
       <header className="page__header">
         <div>
-          <div className="eyebrow">ops surface</div>
           <h1>{title}</h1>
         </div>
         <p>{subtitle}</p>
       </header>
       {children}
+    </div>
+  )
+}
+
+function FolderPicker({
+  label,
+  value,
+  onChange,
+  rootPath = DEFAULT_NAS_ROOT,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  rootPath?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [browsePath, setBrowsePath] = useState(value || rootPath)
+  const [entries, setEntries] = useState<FileEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+    const path = normalizeFolderPath(browsePath || value || rootPath)
+    let cancelled = false
+    setLoading(true)
+    void api<{ entries: FileEntry[] }>('/api/helpers/local/browse', {
+      method: 'POST',
+      body: JSON.stringify({ path, mode: 'target' }),
+    })
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+        setEntries(response.entries.filter((entry) => entry.isDir))
+        setError('')
+      })
+      .catch((requestError: Error) => {
+        if (cancelled) {
+          return
+        }
+        setEntries([])
+        setError(requestError.message)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [browsePath, open, rootPath, value])
+
+  const currentPath = normalizeFolderPath(open ? browsePath : value || rootPath)
+  const canGoUp = currentPath !== normalizeFolderPath(rootPath)
+
+  return (
+    <div className="folder-picker">
+      <span>{label}</span>
+      <button
+        type="button"
+        className="folder-picker__trigger"
+        onClick={() => {
+          setBrowsePath(normalizeFolderPath(value || rootPath))
+          setOpen((current) => !current)
+        }}
+      >
+        <span className="folder-picker__value">{value || rootPath}</span>
+        <span className="folder-picker__action">{open ? 'Close' : 'Choose folder'}</span>
+      </button>
+      {open ? (
+        <div className="folder-picker__menu">
+          <div className="folder-picker__toolbar">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!canGoUp}
+              onClick={() => setBrowsePath(parentDirectory(currentPath))}
+            >
+              Up
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                onChange(currentPath)
+                setOpen(false)
+              }}
+            >
+              Use this folder
+            </button>
+          </div>
+          <div className="folder-picker__path">{currentPath}</div>
+          {error ? <div className="callout">{error}</div> : null}
+          <div className="browser-list">
+            {loading ? <div className="terminal-block">Loading folders…</div> : null}
+            {!loading && entries.length === 0 ? (
+              <div className="terminal-block">No subfolders here.</div>
+            ) : null}
+            {!loading
+              ? entries.map((entry) => (
+                  <button
+                    key={entry.path}
+                    className="browser-item"
+                    type="button"
+                    onClick={() => setBrowsePath(entry.path)}
+                  >
+                    <span>{entry.name}</span>
+                    <span>{entry.path}</span>
+                  </button>
+                ))
+              : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1073,6 +1197,23 @@ function routeToPath(route: Route) {
 
 function appendLine(current: string, value: string) {
   return current.trim() ? `${current}\n${value}` : value
+}
+
+function normalizeFolderPath(value: string) {
+  const normalized = value.trim().replace(/\/+$/, '')
+  return normalized || '/'
+}
+
+function parentDirectory(value: string) {
+  const normalized = normalizeFolderPath(value)
+  if (normalized === '/') {
+    return '/'
+  }
+  const lastSlash = normalized.lastIndexOf('/')
+  if (lastSlash <= 0) {
+    return '/'
+  }
+  return normalized.slice(0, lastSlash)
 }
 
 function lines(value: string) {
