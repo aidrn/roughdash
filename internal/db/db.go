@@ -482,6 +482,21 @@ func (s *Store) ListJobs(ctx context.Context) ([]models.Job, error) {
 	return jobs, rows.Err()
 }
 
+func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM jobs WHERE id = ?;`, jobID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) ListRunnableJobs(ctx context.Context) ([]models.Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,

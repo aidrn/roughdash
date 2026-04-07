@@ -28,6 +28,7 @@ type GroupDraft = {
   newFolder: string
   linksText: string
   transcode: boolean
+  fetchSubtitles: boolean
 }
 
 type IngestDraft = {
@@ -621,27 +622,15 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
 
 function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
   const [groups, setGroups] = useState<GroupDraft[]>(() =>
-    loadPersistent<GroupDraft[]>(DOWNLOADS_DRAFT_KEY, defaultDownloadGroups()),
+    normalizeDownloadDrafts(loadPersistent<GroupDraft[]>(DOWNLOADS_DRAFT_KEY, defaultDownloadGroups())),
   )
   const [preview, setPreview] = useState<DownloadPreview | null>(null)
   const previewRef = useRef<HTMLElement | null>(null)
-  const {
-    jobs: downloadJobs,
-    selectedJob,
-    selectedJobId,
-    setSelectedJobId,
-    events,
-    refreshJobs,
-    seedJobStatus,
-  } = useLiveJobs({ onToast, type: 'download', notifyOnStart: true })
-  const activeDownloadJobs = useMemo(
-    () => downloadJobs.filter((job) => isActiveJob(job)),
-    [downloadJobs],
-  )
-  const archivedDownloadJobs = useMemo(
-    () => downloadJobs.filter((job) => !isActiveJob(job)),
-    [downloadJobs],
-  )
+  const { refreshJobs, seedJobStatus } = useLiveJobs({
+    onToast,
+    type: 'download',
+    notifyOnStart: true,
+  })
 
   useEffect(() => {
     savePersistent(DOWNLOADS_DRAFT_KEY, groups)
@@ -668,6 +657,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
             newFolder: group.newFolder,
             links: lines(group.linksText),
             transcode: group.transcode,
+            fetchSubtitles: group.fetchSubtitles,
           })),
         }),
       })
@@ -691,6 +681,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
           newFolder: group.newFolder,
           links: lines(group.linksText),
           transcode: group.transcode,
+          fetchSubtitles: group.fetchSubtitles,
         })),
       }
       const previewResponse = await api<{ preview: DownloadPreview }>('/api/downloads/preview', {
@@ -729,7 +720,6 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
       setPreview(null)
       seedJobStatus(response.job.id, response.job.status)
       await refreshJobs()
-      setSelectedJobId(response.job.id)
       onToast(`Download job queued: ${response.job.id}. A start notification will appear when the worker picks it up.`)
     } catch (error) {
       onToast((error as Error).message)
@@ -751,9 +741,16 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
             className="secondary-button"
             type="button"
             onClick={() =>
-              setGroups((current) => [
-                ...current,
-                { name: '', basePath: DEFAULT_NAS_ROOT, newFolder: '', linksText: '', transcode: true },
+            setGroups((current) => [
+              ...current,
+                {
+                  name: '',
+                  basePath: DEFAULT_NAS_ROOT,
+                  newFolder: '',
+                  linksText: '',
+                  transcode: true,
+                  fetchSubtitles: true,
+                },
               ])
             }
           >
@@ -788,6 +785,14 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
               <label className="checkbox">
                 <input type="checkbox" checked={group.transcode} onChange={(event) => updateGroup(index, { transcode: event.target.checked })} />
                 <span>Archive HEVC MP4 after download</span>
+              </label>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={group.fetchSubtitles}
+                  onChange={(event) => updateGroup(index, { fetchSubtitles: event.target.checked })}
+                />
+                <span>Fetch and embed subtitles when available</span>
               </label>
             </div>
           ))}
@@ -831,56 +836,6 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
               ))}
             </section>
           ) : null}
-        </div>
-      </section>
-      <section className="panel">
-        <div className="row-space">
-          <h2>Download activity</h2>
-          <span>{activeDownloadJobs.length} active</span>
-        </div>
-        <div className="two-column two-column--wide-detail">
-          <div className="stack">
-            <section className="subpanel">
-              <h3>Queue</h3>
-              <div className="table">
-                {activeDownloadJobs.length === 0 ? (
-                  <div className="terminal-block">No active download jobs.</div>
-                ) : (
-                  activeDownloadJobs.map((job) => (
-                    <JobListButton
-                      key={job.id}
-                      job={job}
-                      selected={job.id === selectedJobId}
-                      onSelect={setSelectedJobId}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-            <section className="subpanel">
-              <h3>Archive</h3>
-              <div className="table">
-                {archivedDownloadJobs.length === 0 ? (
-                  <div className="terminal-block">No completed, cancelled, or failed download jobs yet.</div>
-                ) : (
-                  archivedDownloadJobs.map((job) => (
-                    <JobListButton
-                      key={job.id}
-                      job={job}
-                      selected={job.id === selectedJobId}
-                      onSelect={setSelectedJobId}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-          <JobDetailPanel
-            job={selectedJob}
-            events={events}
-            onToast={onToast}
-            onRefresh={() => void refreshJobs()}
-          />
         </div>
       </section>
     </Page>
@@ -1008,6 +963,7 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
   })
   const activeJobs = useMemo(() => jobs.filter((job) => isActiveJob(job)), [jobs])
   const archivedJobs = useMemo(() => jobs.filter((job) => !isActiveJob(job)), [jobs])
+  const [archiveOpen, setArchiveOpen] = useState(false)
 
   return (
     <Page title="Jobs" subtitle="Queue state, progress, and detailed event logs.">
@@ -1031,21 +987,34 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
             </div>
           </section>
           <section className="panel">
-            <h2>Archive</h2>
-            <div className="table">
-              {archivedJobs.length === 0 ? (
-                <div className="terminal-block">No archived jobs yet.</div>
-              ) : (
-                archivedJobs.map((job) => (
-                  <JobListButton
-                    key={job.id}
-                    job={job}
-                    selected={job.id === selectedJobId}
-                    onSelect={setSelectedJobId}
-                  />
-                ))
-              )}
+            <div className="row-space">
+              <h2>Archive</h2>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setArchiveOpen((current) => !current)}
+              >
+                {archiveOpen ? 'Hide archive' : `Show archive (${archivedJobs.length})`}
+              </button>
             </div>
+            {archiveOpen ? (
+              <div className="table">
+                {archivedJobs.length === 0 ? (
+                  <div className="terminal-block">No archived jobs yet.</div>
+                ) : (
+                  archivedJobs.map((job) => (
+                    <JobListButton
+                      key={job.id}
+                      job={job}
+                      selected={job.id === selectedJobId}
+                      onSelect={setSelectedJobId}
+                    />
+                  ))
+                )}
+              </div>
+            ) : (
+              <div className="terminal-block">Archive hidden until requested.</div>
+            )}
           </section>
         </div>
         <JobDetailPanel
@@ -1053,6 +1022,7 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
           events={events}
           onToast={onToast}
           onRefresh={() => void refreshJobs()}
+          onDelete={() => void refreshJobs()}
         />
       </div>
     </Page>
@@ -1465,15 +1435,18 @@ function JobDetailPanel({
   events,
   onToast,
   onRefresh,
+  onDelete,
 }: {
   job?: Job
   events: JobEvent[]
   onToast: (message: string) => void
   onRefresh: () => void
+  onDelete?: () => void
 }) {
   const canPause = job?.status === 'queued' || job?.status === 'running'
   const canResume = job?.status === 'paused' || job?.status === 'failed' || job?.status === 'interrupted'
   const canCancel = job?.status === 'queued' || job?.status === 'running' || job?.status === 'paused'
+  const canDelete = Boolean(job && !isActiveJob(job))
 
   return (
     <section className="panel">
@@ -1496,6 +1469,18 @@ function JobDetailPanel({
             ) : null}
             {canCancel ? (
               <JobActionButton id={job.id} action="cancel" label="Cancel" onToast={onToast} onDone={onRefresh} />
+            ) : null}
+            {canDelete ? (
+              <JobActionButton
+                id={job.id}
+                action="delete"
+                label="Delete"
+                onToast={onToast}
+                onDone={() => {
+                  onRefresh()
+                  onDelete?.()
+                }}
+              />
             ) : null}
           </div>
           <div className="event-log">
@@ -1548,7 +1533,7 @@ function JobActionButton({
   onDone,
 }: {
   id: string
-  action: 'pause' | 'resume' | 'cancel'
+  action: 'pause' | 'resume' | 'cancel' | 'delete'
   label: string
   onToast: (message: string) => void
   onDone: () => void
@@ -1559,7 +1544,15 @@ function JobActionButton({
       type="button"
       onClick={async () => {
         try {
-          await api<Record<string, never>>(`/api/jobs/${id}/${action}`, { method: 'POST' })
+          if (action === 'delete') {
+            const confirmed = window.confirm('Delete this archived job and its stored log entries?')
+            if (!confirmed) {
+              return
+            }
+            await api<Record<string, never>>(`/api/jobs/${id}`, { method: 'DELETE' })
+          } else {
+            await api<Record<string, never>>(`/api/jobs/${id}/${action}`, { method: 'POST' })
+          }
           onDone()
         } catch (error) {
           onToast((error as Error).message)
@@ -1604,8 +1597,21 @@ function defaultDownloadGroups(): GroupDraft[] {
       newFolder: 'Poland',
       linksText: '',
       transcode: true,
+      fetchSubtitles: true,
     },
   ]
+}
+
+function normalizeDownloadDrafts(value: GroupDraft[]) {
+  const source = Array.isArray(value) && value.length > 0 ? value : defaultDownloadGroups()
+  return source.map((group) => ({
+    name: group?.name ?? '',
+    basePath: group?.basePath ?? DEFAULT_NAS_ROOT,
+    newFolder: group?.newFolder ?? '',
+    linksText: group?.linksText ?? '',
+    transcode: group?.transcode ?? true,
+    fetchSubtitles: group?.fetchSubtitles ?? true,
+  }))
 }
 
 function normalizeFolderPath(value: string) {

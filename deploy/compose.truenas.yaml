@@ -1,0 +1,26 @@
+services:
+  roughdash:
+    image: ghcr.io/aidrn/roughdash:dev
+    container_name: roughdash
+    restart: unless-stopped
+    ports:
+      - "8420:8420"
+    environment:
+      ROUGHDASH_ADDR: ":8420"
+      ROUGHDASH_DATA_DIR: "/data"
+      ROUGHDASH_DB_PATH: "/data/roughdash.sqlite"
+      ROUGHDASH_TEMP_DIR: "/data/tmp"
+      ROUGHDASH_STATIC_DIR: "/app/web/dist"
+      ROUGHDASH_NAS_ROOT: "/mnt/Main/AIDEN"
+      ROUGHDASH_BOOTSTRAP_SECRET: "CHANGE-THIS-TO-A-LONG-RANDOM-SECRET"
+    volumes:
+      - /mnt/<POOL>/apps/roughdash-data:/data
+      - /mnt/Main/AIDEN:/mnt/Main/AIDEN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu

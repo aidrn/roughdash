@@ -146,11 +146,12 @@ type DownloadRequest struct {
 }
 
 type DownloadGroup struct {
-	Name      string   `json:"name"`
-	BasePath  string   `json:"basePath"`
-	NewFolder string   `json:"newFolder,omitempty"`
-	Links     []string `json:"links"`
-	Transcode bool     `json:"transcode"`
+	Name           string   `json:"name"`
+	BasePath       string   `json:"basePath"`
+	NewFolder      string   `json:"newFolder,omitempty"`
+	Links          []string `json:"links"`
+	Transcode      bool     `json:"transcode"`
+	FetchSubtitles bool     `json:"fetchSubtitles"`
 }
 
 type DownloadPreview struct {

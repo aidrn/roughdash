@@ -60,6 +60,12 @@ ROUGHDASH_NAS_ROOT=/mnt/Main/AIDEN
 ROUGHDASH_BOOTSTRAP_SECRET=roughdash-bootstrap
 ```
 
+## TrueNAS custom app
+
+`deploy/compose.truenas.yaml` contains a ready-to-edit custom app YAML example for TrueNAS SCALE. It includes the standard mounts and an optional NVIDIA GPU reservation block.
+
+Important note for NVIDIA cards: TrueNAS 25.10 switched to the NVIDIA open kernel module path for apps and containers. That release only supports Turing and newer NVIDIA architectures, so a GTX 1060 (Pascal) is not compatible there. If your NAS is on 25.10, the GPU stanza alone will not make HEVC NVENC work with that card.
+
 ## Helper usage
 
 First-time pairing:

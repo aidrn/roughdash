@@ -18,12 +18,12 @@ type Subscriber interface {
 }
 
 type Engine struct {
-	store       *db.Store
-	subscriber  Subscriber
-	handlers    map[string]Handler
-	wakeCh      chan struct{}
-	activeJobs  map[string]context.CancelFunc
-	activeMu    sync.Mutex
+	store      *db.Store
+	subscriber Subscriber
+	handlers   map[string]Handler
+	wakeCh     chan struct{}
+	activeJobs map[string]context.CancelFunc
+	activeMu   sync.Mutex
 }
 
 func NewEngine(store *db.Store, subscriber Subscriber) *Engine {
@@ -79,6 +79,9 @@ func (e *Engine) runOnce(ctx context.Context) error {
 		}
 		if err := e.store.UpdateJobState(ctx, job.ID, models.JobStatusRunning, "", job.Progress); err != nil {
 			return err
+		}
+		if event, err := e.store.AddJobEvent(ctx, job.ID, "info", "Job started"); err == nil {
+			e.subscriber.NotifyJobEvent(*event)
 		}
 		running, _ := e.store.GetJob(ctx, job.ID)
 		if running != nil {

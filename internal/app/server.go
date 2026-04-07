@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/downloads/jobs", s.authRequired(s.handleDownloadsCreate))
 	mux.HandleFunc("GET /api/jobs", s.authRequired(s.handleJobsList))
 	mux.HandleFunc("GET /api/jobs/{id}", s.authRequired(s.handleJobsGet))
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.authRequired(s.handleJobDelete))
 	mux.HandleFunc("POST /api/jobs/{id}/pause", s.authRequired(s.handleJobPause))
 	mux.HandleFunc("POST /api/jobs/{id}/resume", s.authRequired(s.handleJobResume))
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.authRequired(s.handleJobCancel))
@@ -509,6 +510,7 @@ func (s *Server) handleIngestJobCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", "Job queued")
 	user, _ := s.currentUser(r)
 	_ = s.store.RecordAudit(ctx, "job.ingest.created", username(user), job.ID, map[string]any{"files": len(preview.Files)})
 	s.jobs.Wake()
@@ -577,6 +579,7 @@ func (s *Server) handleDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", "Job queued")
 	user, _ := s.currentUser(r)
 	_ = s.store.RecordAudit(ctx, "job.download.created", username(user), job.ID, map[string]any{
 		"videos":          videoCount,
@@ -614,6 +617,38 @@ func (s *Server) handleJobsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job": job, "events": events})
+}
+
+func (s *Server) handleJobDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	jobID := r.PathValue("id")
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if job.Status == models.JobStatusQueued || job.Status == models.JobStatusRunning {
+		writeError(w, http.StatusBadRequest, errors.New("queued or running jobs cannot be deleted"))
+		return
+	}
+	if err := s.store.DeleteJob(ctx, jobID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	user, _ := s.currentUser(r)
+	_ = s.store.RecordAudit(ctx, "job.deleted", username(user), jobID, map[string]any{
+		"type":   job.Type,
+		"status": job.Status,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) handleJobPause(w http.ResponseWriter, r *http.Request) {
@@ -954,19 +989,25 @@ func (s *Server) processDownloadVideo(
 
 	updateStageProgress(0.03)
 	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Downloading %s", video.Title))
-	sourcePath, err := s.downloads.DownloadVideo(ctx, video, tempDir)
+	downloadProgress := newToolProgressReporter(ctx, s.jobs, job.ID, "Download", 6*time.Second, func(fraction float64) {
+		updateStageProgress(0.05 + (0.45 * fraction))
+	})
+	sourcePath, err := s.downloads.DownloadVideo(ctx, video, tempDir, downloadProgress)
 	if err != nil {
 		return err
 	}
-	updateStageProgress(0.45)
+	updateStageProgress(0.50)
 	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Downloaded source file %s", filepath.Base(sourcePath)))
 
 	subtitlePath := ""
 	subtitlesEmbedded := false
-	if video.SubtitlesAvailable {
+	if group.FetchSubtitles && video.SubtitlesAvailable {
 		updateStageProgress(0.55)
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Fetching subtitles for %s", video.Title))
-		fetchedSubtitlePath, warning, subtitleErr := s.downloads.DownloadSubtitles(ctx, video, tempDir)
+		subtitleProgress := newToolProgressReporter(ctx, s.jobs, job.ID, "Subtitles", 8*time.Second, func(fraction float64) {
+			updateStageProgress(0.55 + (0.08 * fraction))
+		})
+		fetchedSubtitlePath, warning, subtitleErr := s.downloads.DownloadSubtitles(ctx, video, tempDir, subtitleProgress)
 		if subtitleErr != nil {
 			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Subtitles skipped for %s: %s", video.Title, subtitleErr.Error()))
 		} else {
@@ -980,13 +1021,18 @@ func (s *Server) processDownloadVideo(
 				_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("No subtitles were captured for %s", video.Title))
 			}
 		}
+	} else if !group.FetchSubtitles && video.SubtitlesAvailable {
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Subtitle fetch disabled for %s", video.Title))
 	}
 
 	finalPath := video.FinalPath
 	updateStageProgress(0.65)
 	if group.Transcode {
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Transcoding %s", filepath.Base(sourcePath)))
-		subtitlesEmbedded, err = s.downloads.Transcode(ctx, sourcePath, subtitlePath, finalPath)
+		transcodeProgress := newToolProgressReporter(ctx, s.jobs, job.ID, "Transcode", 8*time.Second, func(fraction float64) {
+			updateStageProgress(0.65 + (0.30 * fraction))
+		})
+		subtitlesEmbedded, err = s.downloads.Transcode(ctx, sourcePath, subtitlePath, finalPath, transcodeProgress)
 		if err != nil {
 			return err
 		}
@@ -1000,11 +1046,11 @@ func (s *Server) processDownloadVideo(
 			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Subtitle track for %s was not embedded", video.Title))
 		}
 	} else {
-		finalPath = sourcePath
 		if err := os.MkdirAll(filepath.Dir(video.FinalPath), 0o755); err != nil {
 			return err
 		}
-		finalPath = filepath.Join(filepath.Dir(video.FinalPath), filepath.Base(sourcePath))
+		finalPath = strings.TrimSuffix(video.FinalPath, filepath.Ext(video.FinalPath)) + filepath.Ext(sourcePath)
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Finalizing %s", filepath.Base(finalPath)))
 		if err := system.CopyFile(sourcePath, finalPath); err != nil {
 			return err
 		}
@@ -1036,6 +1082,40 @@ func (s *Server) processDownloadVideo(
 	updateStageProgress(1)
 	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Completed %s", filepath.Base(finalPath)))
 	return nil
+}
+
+func newToolProgressReporter(
+	ctx context.Context,
+	engine *jobs.Engine,
+	jobID string,
+	prefix string,
+	interval time.Duration,
+	onProgress func(float64),
+) func(downloads.ProgressUpdate) {
+	lastLogAt := time.Time{}
+	lastBucket := -1
+	return func(update downloads.ProgressUpdate) {
+		fraction := update.Fraction
+		if fraction < 0 {
+			fraction = 0
+		}
+		if fraction > 1 {
+			fraction = 1
+		}
+		onProgress(fraction)
+		if strings.TrimSpace(update.Message) == "" {
+			return
+		}
+		bucket := int(fraction * 100)
+		now := time.Now()
+		shouldLog := lastLogAt.IsZero() || now.Sub(lastLogAt) >= interval || bucket >= lastBucket+10 || fraction >= 1
+		if !shouldLog {
+			return
+		}
+		lastLogAt = now
+		lastBucket = bucket
+		_ = engine.AddEvent(ctx, jobID, "info", fmt.Sprintf("%s: %s", prefix, update.Message))
+	}
 }
 
 func (s *Server) authRequired(next http.HandlerFunc) http.HandlerFunc {

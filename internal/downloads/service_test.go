@@ -4,7 +4,7 @@ import "testing"
 
 func TestSanitizeFilename(t *testing.T) {
 	got := sanitizeFilename("Channel / Name: Episode 1")
-	if got != "Channel_Name_Episode_1" {
+	if got != "Channel Name Episode 1" {
 		t.Fatalf("unexpected sanitize result: %s", got)
 	}
 }
