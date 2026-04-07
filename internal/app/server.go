@@ -989,6 +989,7 @@ func (s *Server) processDownloadVideo(
 
 	updateStageProgress(0.03)
 	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Downloading %s", video.Title))
+	_ = s.jobs.UpdateActivity(ctx, job.ID, fmt.Sprintf("Downloading %s", video.Title))
 	downloadProgress := newToolProgressReporter(ctx, s.jobs, job.ID, "Download", 6*time.Second, func(fraction float64) {
 		updateStageProgress(0.05 + (0.45 * fraction))
 	})
@@ -1004,6 +1005,7 @@ func (s *Server) processDownloadVideo(
 	if group.FetchSubtitles && video.SubtitlesAvailable {
 		updateStageProgress(0.55)
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Fetching subtitles for %s", video.Title))
+		_ = s.jobs.UpdateActivity(ctx, job.ID, fmt.Sprintf("Fetching subtitles for %s", video.Title))
 		subtitleProgress := newToolProgressReporter(ctx, s.jobs, job.ID, "Subtitles", 8*time.Second, func(fraction float64) {
 			updateStageProgress(0.55 + (0.08 * fraction))
 		})
@@ -1029,6 +1031,7 @@ func (s *Server) processDownloadVideo(
 	updateStageProgress(0.65)
 	if group.Transcode {
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Transcoding %s", filepath.Base(sourcePath)))
+		_ = s.jobs.UpdateActivity(ctx, job.ID, fmt.Sprintf("Transcoding %s", filepath.Base(sourcePath)))
 		transcodeProgress := newToolProgressReporter(ctx, s.jobs, job.ID, "Transcode", 8*time.Second, func(fraction float64) {
 			updateStageProgress(0.65 + (0.30 * fraction))
 		})
@@ -1051,6 +1054,7 @@ func (s *Server) processDownloadVideo(
 		}
 		finalPath = strings.TrimSuffix(video.FinalPath, filepath.Ext(video.FinalPath)) + filepath.Ext(sourcePath)
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Finalizing %s", filepath.Base(finalPath)))
+		_ = s.jobs.UpdateActivity(ctx, job.ID, fmt.Sprintf("Finalizing %s", filepath.Base(finalPath)))
 		if err := system.CopyFile(sourcePath, finalPath); err != nil {
 			return err
 		}
@@ -1089,11 +1093,9 @@ func newToolProgressReporter(
 	engine *jobs.Engine,
 	jobID string,
 	prefix string,
-	interval time.Duration,
+	_ time.Duration,
 	onProgress func(float64),
 ) func(downloads.ProgressUpdate) {
-	lastLogAt := time.Time{}
-	lastBucket := -1
 	return func(update downloads.ProgressUpdate) {
 		fraction := update.Fraction
 		if fraction < 0 {
@@ -1106,15 +1108,7 @@ func newToolProgressReporter(
 		if strings.TrimSpace(update.Message) == "" {
 			return
 		}
-		bucket := int(fraction * 100)
-		now := time.Now()
-		shouldLog := lastLogAt.IsZero() || now.Sub(lastLogAt) >= interval || bucket >= lastBucket+10 || fraction >= 1
-		if !shouldLog {
-			return
-		}
-		lastLogAt = now
-		lastBucket = bucket
-		_ = engine.AddEvent(ctx, jobID, "info", fmt.Sprintf("%s: %s", prefix, update.Message))
+		_ = engine.UpdateActivity(ctx, jobID, fmt.Sprintf("%s: %s", prefix, update.Message))
 	}
 }
 

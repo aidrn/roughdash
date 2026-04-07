@@ -39,6 +39,7 @@ export type Job = {
   type: string
   status: string
   summary: string
+  activity?: string
   error?: string
   progress: number
   createdAt: string

@@ -95,6 +95,7 @@ type Job struct {
 	Type       string     `json:"type"`
 	Status     string     `json:"status"`
 	Summary    string     `json:"summary"`
+	Activity   string     `json:"activity,omitempty"`
 	Error      string     `json:"error,omitempty"`
 	Progress   float64    `json:"progress"`
 	Payload    []byte     `json:"payload,omitempty"`

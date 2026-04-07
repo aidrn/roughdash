@@ -83,6 +83,7 @@ func (e *Engine) runOnce(ctx context.Context) error {
 		if event, err := e.store.AddJobEvent(ctx, job.ID, "info", "Job started"); err == nil {
 			e.subscriber.NotifyJobEvent(*event)
 		}
+		_ = e.store.UpdateJobActivity(ctx, job.ID, "Starting job")
 		running, _ := e.store.GetJob(ctx, job.ID)
 		if running != nil {
 			e.subscriber.NotifyJob(*running)
@@ -107,14 +108,17 @@ func (e *Engine) runOnce(ctx context.Context) error {
 
 		switch {
 		case err == nil:
+			_ = e.store.UpdateJobActivity(ctx, job.ID, "")
 			_ = e.store.UpdateJobState(ctx, job.ID, models.JobStatusCompleted, "", 1)
 		case errors.Is(err, context.Canceled):
 			if updated.Status == models.JobStatusCancelled || updated.Status == models.JobStatusPaused {
 				break
 			}
+			_ = e.store.UpdateJobActivity(ctx, job.ID, "")
 			_ = e.store.UpdateJobState(ctx, job.ID, models.JobStatusInterrupted, "", updated.Progress)
 		default:
 			_, _ = e.store.AddJobEvent(ctx, job.ID, "error", err.Error())
+			_ = e.store.UpdateJobActivity(ctx, job.ID, "")
 			_ = e.store.UpdateJobState(ctx, job.ID, models.JobStatusFailed, err.Error(), updated.Progress)
 		}
 		finalJob, _ := e.store.GetJob(ctx, job.ID)
@@ -149,15 +153,28 @@ func (e *Engine) UpdateProgress(ctx context.Context, jobID string, progress floa
 	return err
 }
 
+func (e *Engine) UpdateActivity(ctx context.Context, jobID, activity string) error {
+	if err := e.store.UpdateJobActivity(ctx, jobID, activity); err != nil {
+		return err
+	}
+	updated, err := e.store.GetJob(ctx, jobID)
+	if err == nil {
+		e.subscriber.NotifyJob(*updated)
+	}
+	return err
+}
+
 func (e *Engine) Pause(ctx context.Context, jobID string) error {
 	job, err := e.store.GetJob(ctx, jobID)
 	if err != nil {
 		return err
 	}
 	if job.Status == models.JobStatusQueued || job.Status == models.JobStatusInterrupted || job.Status == models.JobStatusFailed {
+		_ = e.store.UpdateJobActivity(ctx, jobID, "")
 		return e.store.UpdateJobState(ctx, jobID, models.JobStatusPaused, "", job.Progress)
 	}
 	if job.Status == models.JobStatusRunning {
+		_ = e.store.UpdateJobActivity(ctx, jobID, "")
 		if err := e.store.UpdateJobState(ctx, jobID, models.JobStatusPaused, "", job.Progress); err != nil {
 			return err
 		}
@@ -179,6 +196,7 @@ func (e *Engine) Resume(ctx context.Context, jobID string) error {
 	if job.Status != models.JobStatusPaused && job.Status != models.JobStatusFailed && job.Status != models.JobStatusInterrupted {
 		return nil
 	}
+	_ = e.store.UpdateJobActivity(ctx, jobID, "")
 	if err := e.store.UpdateJobState(ctx, jobID, models.JobStatusQueued, "", job.Progress); err != nil {
 		return err
 	}
@@ -194,6 +212,7 @@ func (e *Engine) Cancel(ctx context.Context, jobID string) error {
 	if err := e.store.UpdateJobState(ctx, jobID, models.JobStatusCancelled, "", job.Progress); err != nil {
 		return err
 	}
+	_ = e.store.UpdateJobActivity(ctx, jobID, "")
 	e.activeMu.Lock()
 	cancel := e.activeJobs[jobID]
 	e.activeMu.Unlock()

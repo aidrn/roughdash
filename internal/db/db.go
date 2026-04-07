@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -95,6 +96,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			type TEXT NOT NULL,
 			status TEXT NOT NULL,
 			summary TEXT NOT NULL,
+			activity TEXT NOT NULL DEFAULT '',
 			error TEXT NOT NULL DEFAULT '',
 			progress REAL NOT NULL DEFAULT 0,
 			payload BLOB NOT NULL,
@@ -148,6 +150,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, query); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureJobActivityColumn(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureJobActivityColumn(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE jobs ADD COLUMN activity TEXT NOT NULL DEFAULT '';`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name: activity") {
+		return err
 	}
 	return nil
 }
@@ -444,9 +457,18 @@ func (s *Store) UpdateJobState(ctx context.Context, jobID, status, message strin
 	return err
 }
 
+func (s *Store) UpdateJobActivity(ctx context.Context, jobID, activity string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE jobs
+		SET activity = ?, updated_at = ?
+		WHERE id = ?;
+	`, activity, time.Now().UTC(), jobID)
+	return err
+}
+
 func (s *Store) GetJob(ctx context.Context, jobID string) (*models.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,
+		SELECT id, type, status, summary, activity, error, progress, payload, created_at, updated_at,
 		       started_at, finished_at
 		FROM jobs WHERE id = ?;
 	`, jobID)
@@ -462,7 +484,7 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (*models.Job, error) {
 
 func (s *Store) ListJobs(ctx context.Context) ([]models.Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,
+		SELECT id, type, status, summary, activity, error, progress, payload, created_at, updated_at,
 		       started_at, finished_at
 		FROM jobs ORDER BY created_at DESC;
 	`)
@@ -499,7 +521,7 @@ func (s *Store) DeleteJob(ctx context.Context, jobID string) error {
 
 func (s *Store) ListRunnableJobs(ctx context.Context) ([]models.Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,
+		SELECT id, type, status, summary, activity, error, progress, payload, created_at, updated_at,
 		       started_at, finished_at
 		FROM jobs
 		WHERE status = ? OR status = ?
@@ -529,6 +551,7 @@ func scanJob(scan func(dest ...any) error, job *models.Job) error {
 		&job.Type,
 		&job.Status,
 		&job.Summary,
+		&job.Activity,
 		&job.Error,
 		&job.Progress,
 		&job.Payload,

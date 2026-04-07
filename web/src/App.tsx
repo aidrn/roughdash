@@ -1162,6 +1162,7 @@ function FolderPicker({
 }) {
   const [open, setOpen] = useState(false)
   const [browsePath, setBrowsePath] = useState(value || rootPath)
+  const [selectedPath, setSelectedPath] = useState(value || rootPath)
   const [entries, setEntries] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -1212,6 +1213,7 @@ function FolderPicker({
         className="folder-picker__trigger"
         onClick={() => {
           setBrowsePath(normalizeFolderPath(value || rootPath))
+          setSelectedPath(normalizeFolderPath(value || rootPath))
           setOpen((current) => !current)
         }}
       >
@@ -1233,14 +1235,15 @@ function FolderPicker({
               type="button"
               className="primary-button"
               onClick={() => {
-                onChange(currentPath)
+                onChange(selectedPath)
                 setOpen(false)
               }}
             >
-              Use this folder
+              Use selected folder
             </button>
           </div>
-          <div className="folder-picker__path">{currentPath}</div>
+          <div className="folder-picker__path">Browsing: {currentPath}</div>
+          <div className="folder-picker__path">Selected: {selectedPath}</div>
           {error ? <div className="callout">{error}</div> : null}
           <div className="browser-list">
             {loading ? <div className="terminal-block">Loading folders…</div> : null}
@@ -1249,15 +1252,30 @@ function FolderPicker({
             ) : null}
             {!loading
               ? entries.map((entry) => (
-                  <button
+                  <div
                     key={entry.path}
-                    className="browser-item"
-                    type="button"
-                    onClick={() => setBrowsePath(entry.path)}
+                    className={`browser-row ${selectedPath === entry.path ? 'is-selected' : ''}`}
                   >
-                    <span>{entry.name}</span>
-                    <span>{entry.path}</span>
-                  </button>
+                    <button
+                      className="browser-item browser-item--nav"
+                      type="button"
+                      onClick={() => setBrowsePath(entry.path)}
+                    >
+                      <span>{entry.name}</span>
+                      <span>{entry.path}</span>
+                    </button>
+                    <button
+                      className="secondary-button browser-item__select"
+                      type="button"
+                      onClick={() => {
+                        setSelectedPath(entry.path)
+                        onChange(entry.path)
+                        setOpen(false)
+                      }}
+                    >
+                      Select
+                    </button>
+                  </div>
                 ))
               : null}
           </div>
@@ -1458,6 +1476,10 @@ function JobDetailPanel({
             <div>Status: {job.status}</div>
             <div>Updated: {job.updatedAt}</div>
             {job.error ? <div>Error: {job.error}</div> : null}
+          </div>
+          <div className="terminal-block">
+            <div>Current activity</div>
+            <div>{job.activity?.trim() || 'No active stage message.'}</div>
           </div>
           <ProgressBar value={job.progress} large />
           <div className="row-actions">

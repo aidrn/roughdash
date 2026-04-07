@@ -444,6 +444,19 @@ label span,
   gap: 0.55rem;
 }
 
+.browser-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.browser-row.is-selected .browser-item--nav,
+.browser-row.is-selected .browser-item__select {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
 .browser-list,
 .event-log {
   max-height: 420px;
@@ -458,6 +471,14 @@ label span,
   width: 100%;
   padding: 0.8rem 0.9rem;
   text-align: left;
+}
+
+.browser-item--nav {
+  min-width: 0;
+}
+
+.browser-item__select {
+  min-width: 86px;
 }
 
 .table__row {
