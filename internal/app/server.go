@@ -526,6 +526,12 @@ func (s *Server) handleDownloadsPreview(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	duplicates, err := s.findDownloadDuplicates(r.Context(), groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	preview.Duplicates = duplicates
 	writeJSON(w, http.StatusOK, map[string]any{"preview": preview, "resolvedGroups": groups})
 }
 
@@ -541,6 +547,24 @@ func (s *Server) handleDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	duplicates, err := s.findDownloadDuplicates(ctx, groups)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(duplicates) > 0 && !request.ReplaceExisting {
+		writeError(w, http.StatusConflict, fmt.Errorf("matching downloads already exist for %d video(s); confirmation required", len(duplicates)))
+		return
+	}
+	preview.Duplicates = duplicates
+	if request.ReplaceExisting {
+		for _, jobID := range activeDuplicateJobIDs(duplicates) {
+			if err := s.jobs.Cancel(ctx, jobID); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+	}
 	payload := map[string]any{
 		"groups": groups,
 	}
@@ -554,7 +578,11 @@ func (s *Server) handleDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, _ := s.currentUser(r)
-	_ = s.store.RecordAudit(ctx, "job.download.created", username(user), job.ID, map[string]any{"videos": videoCount})
+	_ = s.store.RecordAudit(ctx, "job.download.created", username(user), job.ID, map[string]any{
+		"videos":          videoCount,
+		"replacedJobs":    duplicateJobIDs(duplicates),
+		"duplicateVideos": len(duplicates),
+	})
 	s.jobs.Wake()
 	writeJSON(w, http.StatusCreated, map[string]any{"job": job, "preview": preview})
 }
@@ -803,6 +831,103 @@ func (s *Server) handleDownloadJob(ctx context.Context, job models.Job) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) findDownloadDuplicates(ctx context.Context, groups []downloads.ResolvedGroup) ([]models.DownloadDuplicate, error) {
+	jobsList, err := s.store.ListJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	type payloadGroup struct {
+		Groups []downloads.ResolvedGroup `json:"groups"`
+	}
+
+	seen := make(map[string]struct{})
+	duplicates := make([]models.DownloadDuplicate, 0)
+	for _, existingJob := range jobsList {
+		if existingJob.Type != models.JobTypeDownload || existingJob.Status == models.JobStatusCancelled {
+			continue
+		}
+
+		var payload payloadGroup
+		if err := json.Unmarshal(existingJob.Payload, &payload); err != nil {
+			continue
+		}
+
+		existingVideos := make(map[string]downloads.ResolvedVideo)
+		for _, group := range payload.Groups {
+			for _, video := range group.Videos {
+				if video.VideoID == "" {
+					continue
+				}
+				existingVideos[video.VideoID] = video
+			}
+		}
+
+		for _, group := range groups {
+			for _, video := range group.Videos {
+				match, ok := existingVideos[video.VideoID]
+				if !ok || video.VideoID == "" {
+					continue
+				}
+				key := existingJob.ID + ":" + video.VideoID
+				if _, found := seen[key]; found {
+					continue
+				}
+				seen[key] = struct{}{}
+				duplicates = append(duplicates, models.DownloadDuplicate{
+					VideoID:        video.VideoID,
+					Title:          video.Title,
+					Uploader:       video.Uploader,
+					MatchingJobID:  existingJob.ID,
+					MatchingStatus: existingJob.Status,
+					TargetPath:     match.FinalPath,
+					Active:         isActiveJobStatus(existingJob.Status),
+				})
+			}
+		}
+	}
+
+	return duplicates, nil
+}
+
+func duplicateJobIDs(duplicates []models.DownloadDuplicate) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, duplicate := range duplicates {
+		if _, exists := seen[duplicate.MatchingJobID]; exists {
+			continue
+		}
+		seen[duplicate.MatchingJobID] = struct{}{}
+		result = append(result, duplicate.MatchingJobID)
+	}
+	return result
+}
+
+func activeDuplicateJobIDs(duplicates []models.DownloadDuplicate) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, duplicate := range duplicates {
+		if !duplicate.Active {
+			continue
+		}
+		if _, exists := seen[duplicate.MatchingJobID]; exists {
+			continue
+		}
+		seen[duplicate.MatchingJobID] = struct{}{}
+		result = append(result, duplicate.MatchingJobID)
+	}
+	return result
+}
+
+func isActiveJobStatus(status string) bool {
+	switch status {
+	case models.JobStatusQueued, models.JobStatusRunning, models.JobStatusPaused, models.JobStatusInterrupted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) processDownloadVideo(

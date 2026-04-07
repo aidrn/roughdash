@@ -141,7 +141,8 @@ type FileSkip struct {
 }
 
 type DownloadRequest struct {
-	Groups []DownloadGroup `json:"groups"`
+	Groups          []DownloadGroup `json:"groups"`
+	ReplaceExisting bool            `json:"replaceExisting,omitempty"`
 }
 
 type DownloadGroup struct {
@@ -153,7 +154,8 @@ type DownloadGroup struct {
 }
 
 type DownloadPreview struct {
-	Groups []DownloadGroupPreview `json:"groups"`
+	Groups     []DownloadGroupPreview `json:"groups"`
+	Duplicates []DownloadDuplicate    `json:"duplicates,omitempty"`
 }
 
 type DownloadGroupPreview struct {
@@ -170,6 +172,16 @@ type DownloadVideoPreview struct {
 	PlaylistTitle string `json:"playlistTitle,omitempty"`
 	QualityLabel  string `json:"qualityLabel"`
 	FinalPath     string `json:"finalPath"`
+}
+
+type DownloadDuplicate struct {
+	VideoID        string `json:"videoId"`
+	Title          string `json:"title"`
+	Uploader       string `json:"uploader"`
+	MatchingJobID  string `json:"matchingJobId"`
+	MatchingStatus string `json:"matchingStatus"`
+	TargetPath     string `json:"targetPath"`
+	Active         bool   `json:"active"`
 }
 
 type MediaRecord struct {

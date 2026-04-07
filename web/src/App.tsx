@@ -632,7 +632,8 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
     setSelectedJobId,
     events,
     refreshJobs,
-  } = useLiveJobs({ onToast, type: 'download' })
+    seedJobStatus,
+  } = useLiveJobs({ onToast, type: 'download', notifyOnStart: true })
   const activeDownloadJobs = useMemo(
     () => downloadJobs.filter((job) => isActiveJob(job)),
     [downloadJobs],
@@ -671,7 +672,11 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
         }),
       })
       setPreview(response.preview)
-      onToast('Download preview ready.')
+      if ((response.preview.duplicates ?? []).length > 0) {
+        onToast(`Preview found ${response.preview.duplicates?.length ?? 0} duplicate video match(es).`)
+      } else {
+        onToast('Download preview ready.')
+      }
     } catch (error) {
       onToast((error as Error).message)
     }
@@ -679,22 +684,53 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
 
   async function createJob() {
     try {
+      const requestBody = {
+        groups: groups.map((group) => ({
+          name: group.name,
+          basePath: group.basePath,
+          newFolder: group.newFolder,
+          links: lines(group.linksText),
+          transcode: group.transcode,
+        })),
+      }
+      const previewResponse = await api<{ preview: DownloadPreview }>('/api/downloads/preview', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      })
+      setPreview(previewResponse.preview)
+
+      let replaceExisting = false
+      const duplicates = previewResponse.preview.duplicates ?? []
+      if (duplicates.length > 0) {
+        const message = [
+          `${duplicates.length} matching download(s) already exist.`,
+          'If you continue, active matching jobs will be cancelled and this new one will be queued.',
+          '',
+          ...duplicates.slice(0, 6).map(
+            (duplicate) =>
+              `${duplicate.title} [${duplicate.matchingStatus}] -> ${duplicate.matchingJobId}`,
+          ),
+        ].join('\n')
+        const confirmed = window.confirm(message)
+        if (!confirmed) {
+          onToast('Duplicate download request cancelled.')
+          return
+        }
+        replaceExisting = true
+      }
+
       const response = await api<{ job: Job }>('/api/downloads/jobs', {
         method: 'POST',
         body: JSON.stringify({
-          groups: groups.map((group) => ({
-            name: group.name,
-            basePath: group.basePath,
-            newFolder: group.newFolder,
-            links: lines(group.linksText),
-            transcode: group.transcode,
-          })),
+          ...requestBody,
+          replaceExisting,
         }),
       })
       setPreview(null)
+      seedJobStatus(response.job.id, response.job.status)
       await refreshJobs()
       setSelectedJobId(response.job.id)
-      onToast('Download job queued.')
+      onToast(`Download job queued: ${response.job.id}. A start notification will appear when the worker picks it up.`)
     } catch (error) {
       onToast((error as Error).message)
     }
@@ -772,6 +808,11 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
                 <h2>Preview</h2>
                 <span>{preview.groups.reduce((count, group) => count + group.videos.length, 0)} files</span>
               </div>
+              {(preview.duplicates ?? []).length > 0 ? (
+                <div className="callout">
+                  {preview.duplicates?.length} duplicate video match(es) found. Queueing will ask for confirmation before replacing any active duplicate jobs.
+                </div>
+              ) : null}
               {preview.groups.map((group) => (
                 <div key={group.name} className="preview-group">
                   <div className="terminal-block">
@@ -1259,14 +1300,17 @@ function FolderPicker({
 function useLiveJobs({
   onToast,
   type,
+  notifyOnStart = false,
 }: {
   onToast: (message: string) => void
   type?: string
+  notifyOnStart?: boolean
 }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [selectedJobId, setSelectedJobId] = useState('')
   const [events, setEvents] = useState<JobEvent[]>([])
   const selectedJobIdRef = useRef('')
+  const knownStatusesRef = useRef<Record<string, string>>({})
 
   useEffect(() => {
     selectedJobIdRef.current = selectedJobId
@@ -1282,6 +1326,15 @@ function useLiveJobs({
           return
         }
         const filteredJobs = (response.jobs ?? []).filter((job) => (type ? job.type === type : true))
+        if (notifyOnStart) {
+          for (const job of filteredJobs) {
+            const previousStatus = knownStatusesRef.current[job.id]
+            if (previousStatus && previousStatus !== 'running' && job.status === 'running') {
+              onToast(`${job.summary} started.`)
+            }
+          }
+        }
+        knownStatusesRef.current = Object.fromEntries(filteredJobs.map((job) => [job.id, job.status]))
         setJobs(filteredJobs)
         setSelectedJobId((current) => {
           if (current && filteredJobs.some((job) => job.id === current)) {
@@ -1327,7 +1380,7 @@ function useLiveJobs({
       window.clearInterval(timer)
       eventSource.close()
     }
-  }, [onToast, type])
+  }, [notifyOnStart, onToast, type])
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -1360,6 +1413,7 @@ function useLiveJobs({
     try {
       const response = await api<{ jobs: Job[] }>('/api/jobs')
       const filteredJobs = (response.jobs ?? []).filter((job) => (type ? job.type === type : true))
+      knownStatusesRef.current = Object.fromEntries(filteredJobs.map((job) => [job.id, job.status]))
       setJobs(filteredJobs)
       setSelectedJobId((current) => {
         if (current && filteredJobs.some((job) => job.id === current)) {
@@ -1372,7 +1426,14 @@ function useLiveJobs({
     }
   }
 
-  return { jobs, selectedJob, selectedJobId, setSelectedJobId, events, refreshJobs }
+  function seedJobStatus(jobID: string, status: string) {
+    knownStatusesRef.current = {
+      ...knownStatusesRef.current,
+      [jobID]: status,
+    }
+  }
+
+  return { jobs, selectedJob, selectedJobId, setSelectedJobId, events, refreshJobs, seedJobStatus }
 }
 
 function JobListButton({

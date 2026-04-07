@@ -100,4 +100,13 @@ export type DownloadPreview = {
       finalPath: string
     }>
   }>
+  duplicates?: Array<{
+    videoId: string
+    title: string
+    uploader: string
+    matchingJobId: string
+    matchingStatus: string
+    targetPath: string
+    active: boolean
+  }>
 }
