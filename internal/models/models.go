@@ -91,17 +91,17 @@ type JobTarget struct {
 }
 
 type Job struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Status     string    `json:"status"`
-	Summary    string    `json:"summary"`
-	Error      string    `json:"error,omitempty"`
-	Progress   float64   `json:"progress"`
-	Payload    []byte    `json:"payload,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-	StartedAt  time.Time `json:"startedAt,omitempty"`
-	FinishedAt time.Time `json:"finishedAt,omitempty"`
+	ID         string     `json:"id"`
+	Type       string     `json:"type"`
+	Status     string     `json:"status"`
+	Summary    string     `json:"summary"`
+	Error      string     `json:"error,omitempty"`
+	Progress   float64    `json:"progress"`
+	Payload    []byte     `json:"payload,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+	StartedAt  *time.Time `json:"startedAt,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 }
 
 type JobEvent struct {
@@ -113,11 +113,11 @@ type JobEvent struct {
 }
 
 type IngestRequest struct {
-	SourceType string   `json:"sourceType"`
-	HelperID   string   `json:"helperId,omitempty"`
-	Paths      []string `json:"paths"`
-	MoveFiles  bool     `json:"moveFiles"`
-	VerifyHash bool     `json:"verifyHash"`
+	SourceType string    `json:"sourceType"`
+	HelperID   string    `json:"helperId,omitempty"`
+	Paths      []string  `json:"paths"`
+	MoveFiles  bool      `json:"moveFiles"`
+	VerifyHash bool      `json:"verifyHash"`
 	Target     JobTarget `json:"target"`
 }
 

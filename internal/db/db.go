@@ -447,12 +447,11 @@ func (s *Store) UpdateJobState(ctx context.Context, jobID, status, message strin
 func (s *Store) GetJob(ctx context.Context, jobID string) (*models.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,
-		       COALESCE(started_at, '0001-01-01T00:00:00Z'),
-		       COALESCE(finished_at, '0001-01-01T00:00:00Z')
+		       started_at, finished_at
 		FROM jobs WHERE id = ?;
 	`, jobID)
 	var job models.Job
-	if err := row.Scan(&job.ID, &job.Type, &job.Status, &job.Summary, &job.Error, &job.Progress, &job.Payload, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt); err != nil {
+	if err := scanJob(row.Scan, &job); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -464,8 +463,7 @@ func (s *Store) GetJob(ctx context.Context, jobID string) (*models.Job, error) {
 func (s *Store) ListJobs(ctx context.Context) ([]models.Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,
-		       COALESCE(started_at, '0001-01-01T00:00:00Z'),
-		       COALESCE(finished_at, '0001-01-01T00:00:00Z')
+		       started_at, finished_at
 		FROM jobs ORDER BY created_at DESC;
 	`)
 	if err != nil {
@@ -476,7 +474,7 @@ func (s *Store) ListJobs(ctx context.Context) ([]models.Job, error) {
 	jobs := []models.Job{}
 	for rows.Next() {
 		var job models.Job
-		if err := rows.Scan(&job.ID, &job.Type, &job.Status, &job.Summary, &job.Error, &job.Progress, &job.Payload, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt); err != nil {
+		if err := scanJob(rows.Scan, &job); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, job)
@@ -487,8 +485,7 @@ func (s *Store) ListJobs(ctx context.Context) ([]models.Job, error) {
 func (s *Store) ListRunnableJobs(ctx context.Context) ([]models.Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, type, status, summary, error, progress, payload, created_at, updated_at,
-		       COALESCE(started_at, '0001-01-01T00:00:00Z'),
-		       COALESCE(finished_at, '0001-01-01T00:00:00Z')
+		       started_at, finished_at
 		FROM jobs
 		WHERE status = ? OR status = ?
 		ORDER BY created_at ASC;
@@ -501,12 +498,43 @@ func (s *Store) ListRunnableJobs(ctx context.Context) ([]models.Job, error) {
 	jobs := []models.Job{}
 	for rows.Next() {
 		var job models.Job
-		if err := rows.Scan(&job.ID, &job.Type, &job.Status, &job.Summary, &job.Error, &job.Progress, &job.Payload, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt); err != nil {
+		if err := scanJob(rows.Scan, &job); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, job)
 	}
 	return jobs, rows.Err()
+}
+
+func scanJob(scan func(dest ...any) error, job *models.Job) error {
+	var startedAt sql.NullTime
+	var finishedAt sql.NullTime
+	if err := scan(
+		&job.ID,
+		&job.Type,
+		&job.Status,
+		&job.Summary,
+		&job.Error,
+		&job.Progress,
+		&job.Payload,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+		&startedAt,
+		&finishedAt,
+	); err != nil {
+		return err
+	}
+	job.StartedAt = nullTimePtr(startedAt)
+	job.FinishedAt = nullTimePtr(finishedAt)
+	return nil
+}
+
+func nullTimePtr(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	timeValue := value.Time
+	return &timeValue
 }
 
 func (s *Store) AddJobEvent(ctx context.Context, jobID, level, message string) (*models.JobEvent, error) {

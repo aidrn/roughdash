@@ -573,7 +573,11 @@ func (s *Server) handleJobsGet(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("id")
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err)
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	events, err := s.store.ListJobEvents(ctx, jobID)

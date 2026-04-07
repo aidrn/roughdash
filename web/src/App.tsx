@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { api } from './api'
 import type {
@@ -353,6 +353,7 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
   const [basePath, setBasePath] = useState(initialDraft.basePath)
   const [projectFolder, setProjectFolder] = useState(initialDraft.projectFolder)
   const [preview, setPreview] = useState<IngestPreview | null>(null)
+  const previewRef = useRef<HTMLElement | null>(null)
   const [browsePath, setBrowsePath] = useState('/')
   const [entries, setEntries] = useState<FileEntry[]>([])
   const [browseMode, setBrowseMode] = useState<'source' | 'target'>('source')
@@ -391,6 +392,12 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
       .catch((error: Error) => onToast(error.message))
   }, [browsePath, browseMode, helperId, onToast])
 
+  useEffect(() => {
+    if (preview) {
+      previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [preview])
+
   async function previewJob() {
     try {
       const response = await api<IngestPreview>('/api/ingest/preview', {
@@ -409,6 +416,7 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
         }),
       })
       setPreview(response)
+      onToast('Ingest preview ready.')
     } catch (error) {
       onToast((error as Error).message)
     }
@@ -581,7 +589,7 @@ function IngestPage({ onToast }: { onToast: (message: string) => void }) {
         </section>
       </div>
       {preview ? (
-        <section className="panel">
+        <section className="panel" ref={previewRef}>
           <h2>Preview</h2>
           <div className="terminal-block">
             <div>Target root: {preview.targetPath}</div>
@@ -608,10 +616,17 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
     loadPersistent<GroupDraft[]>(DOWNLOADS_DRAFT_KEY, defaultDownloadGroups()),
   )
   const [preview, setPreview] = useState<DownloadPreview | null>(null)
+  const previewRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     savePersistent(DOWNLOADS_DRAFT_KEY, groups)
   }, [groups])
+
+  useEffect(() => {
+    if (preview) {
+      previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [preview])
 
   function updateGroup(index: number, patch: Partial<GroupDraft>) {
     setGroups((current) => current.map((group, currentIndex) => (currentIndex === index ? { ...group, ...patch } : group)))
@@ -619,7 +634,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
 
   async function previewJob() {
     try {
-      const response = await api<DownloadPreview>('/api/downloads/preview', {
+      const response = await api<{ preview: DownloadPreview }>('/api/downloads/preview', {
         method: 'POST',
         body: JSON.stringify({
           groups: groups.map((group) => ({
@@ -631,7 +646,8 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
           })),
         }),
       })
-      setPreview(response)
+      setPreview(response.preview)
+      onToast('Download preview ready.')
     } catch (error) {
       onToast((error as Error).message)
     }
@@ -727,9 +743,9 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
         </div>
       </section>
       {preview ? (
-        <section className="panel">
+        <section className="panel" ref={previewRef}>
           <h2>Preview</h2>
-          {preview.preview.groups.map((group) => (
+          {preview.groups.map((group) => (
             <div key={group.name} className="preview-group">
               <div className="terminal-block">
                 <div>Group: {group.name}</div>

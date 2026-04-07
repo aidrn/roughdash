@@ -87,19 +87,17 @@ export type IngestPreview = {
 }
 
 export type DownloadPreview = {
-  preview: {
-    groups: Array<{
-      name: string
-      targetPath: string
-      videos: Array<{
-        link: string
-        videoId: string
-        title: string
-        uploader: string
-        playlistTitle?: string
-        qualityLabel: string
-        finalPath: string
-      }>
+  groups: Array<{
+    name: string
+    targetPath: string
+    videos: Array<{
+      link: string
+      videoId: string
+      title: string
+      uploader: string
+      playlistTitle?: string
+      qualityLabel: string
+      finalPath: string
     }>
-  }
+  }>
 }
