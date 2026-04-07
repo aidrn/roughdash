@@ -218,6 +218,7 @@ label span,
 
 .nav__item.is-active,
 .table__row--job.is-selected,
+.table__row--job-card.is-selected,
 .chip--active {
   background: var(--accent);
   color: var(--accent-ink);
@@ -312,6 +313,10 @@ label span,
   gap: 1rem;
 }
 
+.two-column--wide-detail {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+}
+
 .panel {
   display: grid;
   gap: 1rem;
@@ -334,6 +339,17 @@ label span,
 
 .panel h2 {
   font-size: 1rem;
+  font-weight: 700;
+}
+
+.subpanel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.subpanel h3 {
+  margin: 0;
+  font-size: 0.9rem;
   font-weight: 700;
 }
 
@@ -402,7 +418,9 @@ label span,
 .callout,
 .group-card,
 .preview-group,
-.folder-picker__menu {
+.folder-picker__menu,
+.preview-shell,
+.subpanel {
   padding: 0.9rem;
   border: 2px solid var(--ink);
   background: var(--window-strong);
@@ -460,10 +478,30 @@ label span,
   text-align: left;
 }
 
+.table__row--job-card {
+  display: grid;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.85rem 0.9rem;
+  text-align: left;
+}
+
+.job-card__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
 .table__row--stack,
 .event-log__item {
   display: grid;
   gap: 0.25rem;
+}
+
+.event-log__item {
+  padding: 0.75rem 0.8rem;
+  border: 2px solid var(--ink);
+  background: var(--window-strong);
 }
 
 .status {
@@ -472,6 +510,14 @@ label span,
 
 .status.is-online {
   color: var(--status-online);
+}
+
+.status.is-warning {
+  color: var(--warning);
+}
+
+.status.is-danger {
+  color: var(--danger);
 }
 
 .status.is-offline {
@@ -561,6 +607,65 @@ label span,
 .preview-group {
   display: grid;
   gap: 0.8rem;
+}
+
+.preview-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.preview-shell .row-space h2 {
+  margin: 0;
+}
+
+.tree-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.tree-list__item {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.75rem 0.8rem;
+  border: 2px solid var(--ink);
+  background: var(--window);
+}
+
+.tree-list__folder {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.tree-list__file {
+  color: var(--ink);
+}
+
+.progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.progress__track {
+  height: 12px;
+  border: 2px solid var(--ink);
+  background: var(--window);
+}
+
+.progress__fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.progress__label {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.progress--large .progress__track {
+  height: 18px;
 }
 
 @media (max-width: 1100px) {

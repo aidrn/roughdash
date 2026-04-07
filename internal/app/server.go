@@ -786,62 +786,130 @@ func (s *Server) handleDownloadJob(ctx context.Context, job models.Job) error {
 		if err := os.MkdirAll(group.TargetPath, 0o755); err != nil {
 			return err
 		}
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Processing group %s -> %s", group.Name, group.TargetPath))
 		for _, video := range group.Videos {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
 			}
-			tempDir := filepath.Join(s.cfg.TempDir, job.ID, uuid.NewString())
-			if err := os.MkdirAll(tempDir, 0o755); err != nil {
-				return err
-			}
-			_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Downloading %s", video.Title))
-			sourcePath, subtitlePath, err := s.downloads.Download(ctx, group, video, tempDir)
-			if err != nil {
-				return err
-			}
-
-			finalPath := video.FinalPath
-			subtitlesEmbedded := false
-			if group.Transcode {
-				_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Transcoding %s", filepath.Base(sourcePath)))
-				subtitlesEmbedded, err = s.downloads.Transcode(ctx, sourcePath, subtitlePath, finalPath)
-				if err != nil {
-					return err
-				}
-				_ = os.Remove(sourcePath)
-			} else {
-				if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-					return err
-				}
-				if err := os.Rename(sourcePath, finalPath); err != nil {
-					return err
-				}
-			}
-
-			record := models.MediaRecord{
-				JobID:              job.ID,
-				SourceURL:          video.Link,
-				Title:              video.Title,
-				Uploader:           video.Uploader,
-				UploadDate:         video.UploadDate,
-				Description:        video.Description,
-				PlaylistTitle:      video.PlaylistTitle,
-				ThumbnailAvailable: video.ThumbnailAvailable,
-				SubtitlesAvailable: video.SubtitlesAvailable,
-				SubtitlesEmbedded:  subtitlesEmbedded,
-				TargetPath:         finalPath,
-			}
-			if err := s.store.CreateMediaRecord(ctx, record); err != nil {
+			videoProgressBase := float64(completed) / float64(total)
+			videoProgressSpan := 1 / float64(total)
+			if err := s.processDownloadVideo(ctx, job, group, video, videoProgressBase, videoProgressSpan); err != nil {
 				return err
 			}
 			completed++
 			_ = s.jobs.UpdateProgress(ctx, job.ID, float64(completed)/float64(total))
-			_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Completed %s", filepath.Base(finalPath)))
-			_ = os.RemoveAll(tempDir)
 		}
 	}
+	return nil
+}
+
+func (s *Server) processDownloadVideo(
+	ctx context.Context,
+	job models.Job,
+	group downloads.ResolvedGroup,
+	video downloads.ResolvedVideo,
+	baseProgress float64,
+	progressSpan float64,
+) error {
+	updateStageProgress := func(fraction float64) {
+		value := baseProgress + (progressSpan * fraction)
+		if value > 1 {
+			value = 1
+		}
+		_ = s.jobs.UpdateProgress(ctx, job.ID, value)
+	}
+
+	tempDir := filepath.Join(s.cfg.TempDir, job.ID, uuid.NewString())
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+
+	updateStageProgress(0.03)
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Downloading %s", video.Title))
+	sourcePath, err := s.downloads.DownloadVideo(ctx, video, tempDir)
+	if err != nil {
+		return err
+	}
+	updateStageProgress(0.45)
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Downloaded source file %s", filepath.Base(sourcePath)))
+
+	subtitlePath := ""
+	subtitlesEmbedded := false
+	if video.SubtitlesAvailable {
+		updateStageProgress(0.55)
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Fetching subtitles for %s", video.Title))
+		fetchedSubtitlePath, warning, subtitleErr := s.downloads.DownloadSubtitles(ctx, video, tempDir)
+		if subtitleErr != nil {
+			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Subtitles skipped for %s: %s", video.Title, subtitleErr.Error()))
+		} else {
+			subtitlePath = fetchedSubtitlePath
+			if warning != "" {
+				_ = s.jobs.AddEvent(ctx, job.ID, "warning", warning)
+			}
+			if subtitlePath != "" {
+				_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Prepared subtitle track %s", filepath.Base(subtitlePath)))
+			} else {
+				_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("No subtitles were captured for %s", video.Title))
+			}
+		}
+	}
+
+	finalPath := video.FinalPath
+	updateStageProgress(0.65)
+	if group.Transcode {
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Transcoding %s", filepath.Base(sourcePath)))
+		subtitlesEmbedded, err = s.downloads.Transcode(ctx, sourcePath, subtitlePath, finalPath)
+		if err != nil {
+			return err
+		}
+		updateStageProgress(0.95)
+		_ = os.Remove(sourcePath)
+		if subtitlePath != "" {
+			_ = os.Remove(subtitlePath)
+		}
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Transcode finished for %s", filepath.Base(finalPath)))
+		if subtitlePath != "" && !subtitlesEmbedded {
+			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Subtitle track for %s was not embedded", video.Title))
+		}
+	} else {
+		finalPath = sourcePath
+		if err := os.MkdirAll(filepath.Dir(video.FinalPath), 0o755); err != nil {
+			return err
+		}
+		finalPath = filepath.Join(filepath.Dir(video.FinalPath), filepath.Base(sourcePath))
+		if err := system.CopyFile(sourcePath, finalPath); err != nil {
+			return err
+		}
+		_ = os.Remove(sourcePath)
+		if subtitlePath != "" {
+			_ = os.Remove(subtitlePath)
+			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Discarded subtitle sidecar for %s because transcode is disabled", video.Title))
+		}
+		updateStageProgress(0.95)
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Moved %s into the target folder", filepath.Base(finalPath)))
+	}
+
+	record := models.MediaRecord{
+		JobID:              job.ID,
+		SourceURL:          video.Link,
+		Title:              video.Title,
+		Uploader:           video.Uploader,
+		UploadDate:         video.UploadDate,
+		Description:        video.Description,
+		PlaylistTitle:      video.PlaylistTitle,
+		ThumbnailAvailable: video.ThumbnailAvailable,
+		SubtitlesAvailable: video.SubtitlesAvailable,
+		SubtitlesEmbedded:  subtitlesEmbedded,
+		TargetPath:         finalPath,
+	}
+	if err := s.store.CreateMediaRecord(ctx, record); err != nil {
+		return err
+	}
+	updateStageProgress(1)
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Completed %s", filepath.Base(finalPath)))
 	return nil
 }
 

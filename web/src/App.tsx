@@ -69,6 +69,14 @@ function App() {
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
+  useEffect(() => {
+    if (!toast) {
+      return
+    }
+    const timer = window.setTimeout(() => setToast(''), 4200)
+    return () => window.clearTimeout(timer)
+  }, [toast])
+
   async function refreshStatus() {
     try {
       const status = await api<StatusResponse>('/api/status')
@@ -617,6 +625,22 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
   )
   const [preview, setPreview] = useState<DownloadPreview | null>(null)
   const previewRef = useRef<HTMLElement | null>(null)
+  const {
+    jobs: downloadJobs,
+    selectedJob,
+    selectedJobId,
+    setSelectedJobId,
+    events,
+    refreshJobs,
+  } = useLiveJobs({ onToast, type: 'download' })
+  const activeDownloadJobs = useMemo(
+    () => downloadJobs.filter((job) => isActiveJob(job)),
+    [downloadJobs],
+  )
+  const archivedDownloadJobs = useMemo(
+    () => downloadJobs.filter((job) => !isActiveJob(job)),
+    [downloadJobs],
+  )
 
   useEffect(() => {
     savePersistent(DOWNLOADS_DRAFT_KEY, groups)
@@ -655,7 +679,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
 
   async function createJob() {
     try {
-      await api<Record<string, never>>('/api/downloads/jobs', {
+      const response = await api<{ job: Job }>('/api/downloads/jobs', {
         method: 'POST',
         body: JSON.stringify({
           groups: groups.map((group) => ({
@@ -668,6 +692,8 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
         }),
       })
       setPreview(null)
+      await refreshJobs()
+      setSelectedJobId(response.job.id)
       onToast('Download job queued.')
     } catch (error) {
       onToast((error as Error).message)
@@ -740,31 +766,82 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
               Queue downloads
             </button>
           </div>
+          {preview ? (
+            <section className="preview-shell" ref={previewRef}>
+              <div className="row-space">
+                <h2>Preview</h2>
+                <span>{preview.groups.reduce((count, group) => count + group.videos.length, 0)} files</span>
+              </div>
+              {preview.groups.map((group) => (
+                <div key={group.name} className="preview-group">
+                  <div className="terminal-block">
+                    <div>Folder: {group.targetPath}</div>
+                    <div>Files: {group.videos.length}</div>
+                  </div>
+                  <div className="tree-list">
+                    {group.videos.map((video) => (
+                      <div key={`${video.link}-${video.videoId}`} className="tree-list__item">
+                        <span className="tree-list__folder">{group.targetPath}</span>
+                        <span className="tree-list__file">{fileNameFromPath(video.finalPath)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </section>
+          ) : null}
         </div>
       </section>
-      {preview ? (
-        <section className="panel" ref={previewRef}>
-          <h2>Preview</h2>
-          {preview.groups.map((group) => (
-            <div key={group.name} className="preview-group">
-              <div className="terminal-block">
-                <div>Group: {group.name}</div>
-                <div>Target: {group.targetPath}</div>
-                <div>Videos: {group.videos.length}</div>
-              </div>
+      <section className="panel">
+        <div className="row-space">
+          <h2>Download activity</h2>
+          <span>{activeDownloadJobs.length} active</span>
+        </div>
+        <div className="two-column two-column--wide-detail">
+          <div className="stack">
+            <section className="subpanel">
+              <h3>Queue</h3>
               <div className="table">
-                {group.videos.map((video) => (
-                  <div key={`${video.link}-${video.videoId}`} className="table__row table__row--stack">
-                    <span>{video.uploader}</span>
-                    <span>{video.title}</span>
-                    <span>{video.finalPath}</span>
-                  </div>
-                ))}
+                {activeDownloadJobs.length === 0 ? (
+                  <div className="terminal-block">No active download jobs.</div>
+                ) : (
+                  activeDownloadJobs.map((job) => (
+                    <JobListButton
+                      key={job.id}
+                      job={job}
+                      selected={job.id === selectedJobId}
+                      onSelect={setSelectedJobId}
+                    />
+                  ))
+                )}
               </div>
-            </div>
-          ))}
-        </section>
-      ) : null}
+            </section>
+            <section className="subpanel">
+              <h3>Archive</h3>
+              <div className="table">
+                {archivedDownloadJobs.length === 0 ? (
+                  <div className="terminal-block">No completed, cancelled, or failed download jobs yet.</div>
+                ) : (
+                  archivedDownloadJobs.map((job) => (
+                    <JobListButton
+                      key={job.id}
+                      job={job}
+                      selected={job.id === selectedJobId}
+                      onSelect={setSelectedJobId}
+                    />
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+          <JobDetailPanel
+            job={selectedJob}
+            events={events}
+            onToast={onToast}
+            onRefresh={() => void refreshJobs()}
+          />
+        </div>
+      </section>
     </Page>
   )
 }
@@ -885,99 +962,57 @@ function HelpersPage({ onToast }: { onToast: (message: string) => void }) {
 }
 
 function JobsPage({ onToast }: { onToast: (message: string) => void }) {
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [selectedJobId, setSelectedJobId] = useState('')
-  const [events, setEvents] = useState<JobEvent[]>([])
-
-  async function refreshJobs() {
-    try {
-      const response = await api<{ jobs: Job[] }>('/api/jobs')
-      setJobs(response.jobs)
-      if (!selectedJobId && response.jobs[0]) {
-        setSelectedJobId(response.jobs[0].id)
-      }
-    } catch (error) {
-      onToast((error as Error).message)
-    }
-  }
-
-  async function refreshSelectedJob(jobId: string) {
-    try {
-      const response = await api<{ job: Job; events: JobEvent[] }>(`/api/jobs/${jobId}`)
-      setEvents(response.events)
-    } catch (error) {
-      onToast((error as Error).message)
-    }
-  }
-
-  useEffect(() => {
-    void refreshJobs()
-    const timer = window.setInterval(() => void refreshJobs(), 5000)
-    const eventSource = new EventSource(`${import.meta.env.VITE_API_BASE ?? ''}/api/events`, { withCredentials: true })
-    eventSource.onmessage = () => {
-      void refreshJobs()
-      if (selectedJobId) {
-        void refreshSelectedJob(selectedJobId)
-      }
-    }
-    return () => {
-      window.clearInterval(timer)
-      eventSource.close()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (selectedJobId) {
-      void refreshSelectedJob(selectedJobId)
-    }
-  }, [selectedJobId])
-
-  const selectedJob = useMemo(() => jobs.find((item) => item.id === selectedJobId), [jobs, selectedJobId])
+  const { jobs, selectedJob, selectedJobId, setSelectedJobId, events, refreshJobs } = useLiveJobs({
+    onToast,
+  })
+  const activeJobs = useMemo(() => jobs.filter((job) => isActiveJob(job)), [jobs])
+  const archivedJobs = useMemo(() => jobs.filter((job) => !isActiveJob(job)), [jobs])
 
   return (
     <Page title="Jobs" subtitle="Queue state, progress, and detailed event logs.">
       <div className="two-column">
-        <section className="panel">
-          <h2>Queue</h2>
-          <div className="table">
-            {jobs.map((job) => (
-              <button key={job.id} className={`table__row table__row--job ${job.id === selectedJobId ? 'is-selected' : ''}`} type="button" onClick={() => setSelectedJobId(job.id)}>
-                <span>{job.summary}</span>
-                <span>{job.status}</span>
-                <span>{Math.round(job.progress * 100)}%</span>
-              </button>
-            ))}
-          </div>
-        </section>
-        <section className="panel">
-          <h2>Detail</h2>
-          {selectedJob ? (
-            <>
-              <div className="terminal-block">
-                <div>ID: {selectedJob.id}</div>
-                <div>Status: {selectedJob.status}</div>
-                <div>Progress: {Math.round(selectedJob.progress * 100)}%</div>
-                {selectedJob.error ? <div>Error: {selectedJob.error}</div> : null}
-              </div>
-              <div className="row-actions">
-                <JobActionButton id={selectedJob.id} action="pause" label="Pause" onToast={onToast} onDone={() => void refreshJobs()} />
-                <JobActionButton id={selectedJob.id} action="resume" label="Resume / Retry" onToast={onToast} onDone={() => void refreshJobs()} />
-                <JobActionButton id={selectedJob.id} action="cancel" label="Cancel" onToast={onToast} onDone={() => void refreshJobs()} />
-              </div>
-              <div className="event-log">
-                {events.map((event) => (
-                  <div key={event.id} className="event-log__item">
-                    <span>{event.createdAt}</span>
-                    <span>{event.level}</span>
-                    <span>{event.message}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div className="terminal-block">No job selected.</div>
-          )}
-        </section>
+        <div className="stack">
+          <section className="panel">
+            <h2>Queue</h2>
+            <div className="table">
+              {activeJobs.length === 0 ? (
+                <div className="terminal-block">No queued or running jobs.</div>
+              ) : (
+                activeJobs.map((job) => (
+                  <JobListButton
+                    key={job.id}
+                    job={job}
+                    selected={job.id === selectedJobId}
+                    onSelect={setSelectedJobId}
+                  />
+                ))
+              )}
+            </div>
+          </section>
+          <section className="panel">
+            <h2>Archive</h2>
+            <div className="table">
+              {archivedJobs.length === 0 ? (
+                <div className="terminal-block">No archived jobs yet.</div>
+              ) : (
+                archivedJobs.map((job) => (
+                  <JobListButton
+                    key={job.id}
+                    job={job}
+                    selected={job.id === selectedJobId}
+                    onSelect={setSelectedJobId}
+                  />
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+        <JobDetailPanel
+          job={selectedJob}
+          events={events}
+          onToast={onToast}
+          onRefresh={() => void refreshJobs()}
+        />
       </div>
     </Page>
   )
@@ -1221,6 +1256,220 @@ function FolderPicker({
   )
 }
 
+function useLiveJobs({
+  onToast,
+  type,
+}: {
+  onToast: (message: string) => void
+  type?: string
+}) {
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [selectedJobId, setSelectedJobId] = useState('')
+  const [events, setEvents] = useState<JobEvent[]>([])
+  const selectedJobIdRef = useRef('')
+
+  useEffect(() => {
+    selectedJobIdRef.current = selectedJobId
+  }, [selectedJobId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function refreshJobs() {
+      try {
+        const response = await api<{ jobs: Job[] }>('/api/jobs')
+        if (cancelled) {
+          return
+        }
+        const filteredJobs = (response.jobs ?? []).filter((job) => (type ? job.type === type : true))
+        setJobs(filteredJobs)
+        setSelectedJobId((current) => {
+          if (current && filteredJobs.some((job) => job.id === current)) {
+            return current
+          }
+          return filteredJobs[0]?.id ?? ''
+        })
+      } catch (error) {
+        if (!cancelled) {
+          onToast((error as Error).message)
+        }
+      }
+    }
+
+    async function refreshSelectedJob(jobId: string) {
+      try {
+        const response = await api<{ job: Job; events: JobEvent[] }>(`/api/jobs/${jobId}`)
+        if (!cancelled) {
+          setEvents(response.events ?? [])
+        }
+      } catch (error) {
+        if (!cancelled) {
+          onToast((error as Error).message)
+        }
+      }
+    }
+
+    void refreshJobs()
+    const timer = window.setInterval(() => void refreshJobs(), 5000)
+    const eventSource = new EventSource(`${import.meta.env.VITE_API_BASE ?? ''}/api/events`, {
+      withCredentials: true,
+    })
+    eventSource.onmessage = () => {
+      void refreshJobs()
+      const currentSelectedJobId = selectedJobIdRef.current
+      if (currentSelectedJobId) {
+        void refreshSelectedJob(currentSelectedJobId)
+      }
+    }
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      eventSource.close()
+    }
+  }, [onToast, type])
+
+  useEffect(() => {
+    if (!selectedJobId) {
+      setEvents([])
+      return
+    }
+    let cancelled = false
+    void api<{ job: Job; events: JobEvent[] }>(`/api/jobs/${selectedJobId}`)
+      .then((response) => {
+        if (!cancelled) {
+          setEvents(response.events ?? [])
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          onToast(error.message)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [onToast, selectedJobId])
+
+  const selectedJob = useMemo(
+    () => jobs.find((job) => job.id === selectedJobId),
+    [jobs, selectedJobId],
+  )
+
+  async function refreshJobs() {
+    try {
+      const response = await api<{ jobs: Job[] }>('/api/jobs')
+      const filteredJobs = (response.jobs ?? []).filter((job) => (type ? job.type === type : true))
+      setJobs(filteredJobs)
+      setSelectedJobId((current) => {
+        if (current && filteredJobs.some((job) => job.id === current)) {
+          return current
+        }
+        return filteredJobs[0]?.id ?? ''
+      })
+    } catch (error) {
+      onToast((error as Error).message)
+    }
+  }
+
+  return { jobs, selectedJob, selectedJobId, setSelectedJobId, events, refreshJobs }
+}
+
+function JobListButton({
+  job,
+  selected,
+  onSelect,
+}: {
+  job: Job
+  selected: boolean
+  onSelect: (jobId: string) => void
+}) {
+  return (
+    <button
+      className={`table__row table__row--job-card ${selected ? 'is-selected' : ''}`}
+      type="button"
+      onClick={() => onSelect(job.id)}
+    >
+      <div className="job-card__header">
+        <span>{job.summary}</span>
+        <span className={`status ${statusClassName(job.status)}`}>{job.status}</span>
+      </div>
+      <ProgressBar value={job.progress} />
+    </button>
+  )
+}
+
+function JobDetailPanel({
+  job,
+  events,
+  onToast,
+  onRefresh,
+}: {
+  job?: Job
+  events: JobEvent[]
+  onToast: (message: string) => void
+  onRefresh: () => void
+}) {
+  const canPause = job?.status === 'queued' || job?.status === 'running'
+  const canResume = job?.status === 'paused' || job?.status === 'failed' || job?.status === 'interrupted'
+  const canCancel = job?.status === 'queued' || job?.status === 'running' || job?.status === 'paused'
+
+  return (
+    <section className="panel">
+      <h2>Detail</h2>
+      {job ? (
+        <>
+          <div className="terminal-block">
+            <div>ID: {job.id}</div>
+            <div>Status: {job.status}</div>
+            <div>Updated: {job.updatedAt}</div>
+            {job.error ? <div>Error: {job.error}</div> : null}
+          </div>
+          <ProgressBar value={job.progress} large />
+          <div className="row-actions">
+            {canPause ? (
+              <JobActionButton id={job.id} action="pause" label="Pause" onToast={onToast} onDone={onRefresh} />
+            ) : null}
+            {canResume ? (
+              <JobActionButton id={job.id} action="resume" label="Resume / Retry" onToast={onToast} onDone={onRefresh} />
+            ) : null}
+            {canCancel ? (
+              <JobActionButton id={job.id} action="cancel" label="Cancel" onToast={onToast} onDone={onRefresh} />
+            ) : null}
+          </div>
+          <div className="event-log">
+            {events.length === 0 ? (
+              <div className="terminal-block">No job log entries yet.</div>
+            ) : (
+              events.map((event) => (
+                <div key={event.id} className="event-log__item">
+                  <span>{event.createdAt}</span>
+                  <span className={`status ${statusClassName(event.level)}`}>{event.level}</span>
+                  <span>{event.message}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="terminal-block">No job selected.</div>
+      )}
+    </section>
+  )
+}
+
+function ProgressBar({ value, large = false }: { value: number; large?: boolean }) {
+  const percent = Math.max(0, Math.min(100, Math.round(value * 100)))
+  return (
+    <div className={`progress ${large ? 'progress--large' : ''}`} aria-label={`Progress ${percent}%`}>
+      <div className="progress__track">
+        <div className="progress__fill" style={{ width: `${percent}%` }} />
+      </div>
+      <span className="progress__label">{percent}%</span>
+    </div>
+  )
+}
+
 function StatCard({ label, value, wide = false }: { label: string; value: string; wide?: boolean }) {
   return (
     <div className={`stat-card ${wide ? 'stat-card--wide' : ''}`}>
@@ -1317,6 +1566,35 @@ function parentDirectory(value: string) {
 
 function lines(value: string) {
   return value.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
+function isActiveJob(job: Job) {
+  return job.status === 'queued' || job.status === 'running'
+}
+
+function statusClassName(value: string) {
+  switch (value) {
+    case 'running':
+    case 'completed':
+    case 'online':
+      return 'is-online'
+    case 'failed':
+    case 'cancelled':
+    case 'error':
+      return 'is-danger'
+    case 'warning':
+    case 'paused':
+    case 'interrupted':
+      return 'is-warning'
+    default:
+      return 'is-offline'
+  }
+}
+
+function fileNameFromPath(value: string) {
+  const normalized = value.replace(/\/+$/, '')
+  const parts = normalized.split('/')
+  return parts[parts.length - 1] || normalized
 }
 
 function formatBytes(value: number) {

@@ -113,33 +113,25 @@ func (s *Service) Preview(ctx context.Context, request models.DownloadRequest) (
 	return preview, groups, nil
 }
 
-func (s *Service) Download(ctx context.Context, group ResolvedGroup, video ResolvedVideo, tempDir string) (string, string, error) {
+func (s *Service) DownloadVideo(ctx context.Context, video ResolvedVideo, tempDir string) (string, error) {
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	outputTemplate := filepath.Join(tempDir, "%(id)s.%(ext)s")
 	args := []string{
 		"--no-playlist",
 		"--print", "after_move:filepath",
-		"--paths", tempDir,
 		"--output", outputTemplate,
 		"--format", "bv*+ba/b",
-		"--write-subs",
-		"--write-auto-subs",
-		"--sub-langs", "all,-live_chat",
-		"--convert-subs", "srt",
 		video.Link,
 	}
-	cmd := ytDLPCommand(ctx, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", "", fmt.Errorf("yt-dlp failed: %w: %s", err, stderr.String())
+	stdout, stderr, err := runYTDLP(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp failed: %w: %s", err, stderr)
 	}
 
-	downloadedPath := strings.TrimSpace(lastNonEmptyLine(stdout.String()))
+	downloadedPath := strings.TrimSpace(lastNonEmptyLine(stdout))
 	if downloadedPath == "" {
 		matches, _ := filepath.Glob(filepath.Join(tempDir, video.VideoID+".*"))
 		for _, match := range matches {
@@ -150,15 +142,39 @@ func (s *Service) Download(ctx context.Context, group ResolvedGroup, video Resol
 		}
 	}
 	if downloadedPath == "" {
-		return "", "", errors.New("yt-dlp did not produce a video file")
+		return "", errors.New("yt-dlp did not produce a video file")
+	}
+	return downloadedPath, nil
+}
+
+func (s *Service) DownloadSubtitles(ctx context.Context, video ResolvedVideo, tempDir string) (string, string, error) {
+	if !video.SubtitlesAvailable {
+		return "", "", nil
 	}
 
-	subtitlePath := ""
-	matches, _ := filepath.Glob(filepath.Join(tempDir, video.VideoID+"*.srt"))
-	if len(matches) > 0 {
-		subtitlePath = matches[0]
+	outputTemplate := filepath.Join(tempDir, "%(id)s.%(ext)s")
+	args := []string{
+		"--no-playlist",
+		"--skip-download",
+		"--ignore-errors",
+		"--output", outputTemplate,
+		"--write-subs",
+		"--write-auto-subs",
+		"--sub-langs", "all,-live_chat",
+		"--convert-subs", "srt",
+		video.Link,
 	}
-	return downloadedPath, subtitlePath, nil
+	_, stderr, err := runYTDLP(ctx, args...)
+	if err != nil {
+		return "", "", fmt.Errorf("subtitle fetch failed: %w: %s", err, stderr)
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(tempDir, video.VideoID+"*.srt"))
+	warning := summarizeWarnings(stderr)
+	if len(matches) == 0 {
+		return "", warning, nil
+	}
+	return matches[0], warning, nil
 }
 
 func (s *Service) Transcode(ctx context.Context, sourcePath, subtitlePath, outputPath string) (bool, error) {
@@ -281,15 +297,12 @@ func loadMetadata(ctx context.Context, link string, noPlaylist bool) (ytMetadata
 	if noPlaylist {
 		args = append([]string{"--no-playlist"}, args...)
 	}
-	cmd := ytDLPCommand(ctx, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return ytMetadata{}, fmt.Errorf("yt-dlp preflight failed: %w: %s", err, stderr.String())
+	stdout, stderr, err := runYTDLP(ctx, args...)
+	if err != nil {
+		return ytMetadata{}, fmt.Errorf("yt-dlp preflight failed: %w: %s", err, stderr)
 	}
 	var meta ytMetadata
-	if err := json.Unmarshal(stdout.Bytes(), &meta); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &meta); err != nil {
 		return ytMetadata{}, err
 	}
 	return meta, nil
@@ -341,9 +354,45 @@ func lastNonEmptyLine(value string) string {
 	return ""
 }
 
+func runYTDLP(ctx context.Context, args ...string) (string, string, error) {
+	cmd := ytDLPCommand(ctx, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), stderr.String(), err
+	}
+	return stdout.String(), stderr.String(), nil
+}
+
+func summarizeWarnings(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	var warnings []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "WARNING:"):
+			warnings = append(warnings, trimmed)
+		case strings.HasPrefix(trimmed, "ERROR:"):
+			warnings = append(warnings, trimmed)
+		}
+	}
+	return strings.Join(warnings, " ")
+}
+
 func ytDLPCommand(ctx context.Context, args ...string) *exec.Cmd {
 	if runtime.GOOS == "linux" {
-		return exec.CommandContext(ctx, "python3", append([]string{"-m", "yt_dlp"}, args...)...)
+		return exec.CommandContext(ctx, "python3", append([]string{"-m", "yt_dlp"}, withJSRuntime(args...)...)...)
 	}
 	return exec.CommandContext(ctx, "yt-dlp", args...)
+}
+
+func withJSRuntime(args ...string) []string {
+	if path, err := exec.LookPath("node"); err == nil && path != "" {
+		return append([]string{"--js-runtimes", "node"}, args...)
+	}
+	if path, err := exec.LookPath("nodejs"); err == nil && path != "" {
+		return append([]string{"--js-runtimes", fmt.Sprintf("node:%s", path)}, args...)
+	}
+	return args
 }
