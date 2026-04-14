@@ -643,7 +643,22 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
   }, [preview])
 
   function updateGroup(index: number, patch: Partial<GroupDraft>) {
+    setPreview(null)
     setGroups((current) => current.map((group, currentIndex) => (currentIndex === index ? { ...group, ...patch } : group)))
+  }
+
+  function requestGroups() {
+    return groups.map((group) => {
+      const folderName = downloadFolderName(group)
+      return {
+        name: folderName,
+        basePath: group.basePath,
+        newFolder: folderName,
+        links: lines(group.linksText),
+        transcode: group.transcode,
+        fetchSubtitles: group.fetchSubtitles,
+      }
+    })
   }
 
   async function previewJob() {
@@ -651,14 +666,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
       const response = await api<{ preview: DownloadPreview }>('/api/downloads/preview', {
         method: 'POST',
         body: JSON.stringify({
-          groups: groups.map((group) => ({
-            name: group.name,
-            basePath: group.basePath,
-            newFolder: group.newFolder,
-            links: lines(group.linksText),
-            transcode: group.transcode,
-            fetchSubtitles: group.fetchSubtitles,
-          })),
+          groups: requestGroups(),
         }),
       })
       setPreview(response.preview)
@@ -675,23 +683,11 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
   async function createJob() {
     try {
       const requestBody = {
-        groups: groups.map((group) => ({
-          name: group.name,
-          basePath: group.basePath,
-          newFolder: group.newFolder,
-          links: lines(group.linksText),
-          transcode: group.transcode,
-          fetchSubtitles: group.fetchSubtitles,
-        })),
+        groups: requestGroups(),
       }
-      const previewResponse = await api<{ preview: DownloadPreview }>('/api/downloads/preview', {
-        method: 'POST',
-        body: JSON.stringify(requestBody),
-      })
-      setPreview(previewResponse.preview)
 
       let replaceExisting = false
-      const duplicates = previewResponse.preview.duplicates ?? []
+      const duplicates = preview?.duplicates ?? []
       if (duplicates.length > 0) {
         const message = [
           `${duplicates.length} matching download(s) already exist.`,
@@ -709,18 +705,22 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
         }
         replaceExisting = true
       }
+      const replaceJobIds = Array.from(
+        new Set(duplicates.filter((duplicate) => duplicate.active).map((duplicate) => duplicate.matchingJobId)),
+      )
 
       const response = await api<{ job: Job }>('/api/downloads/jobs', {
         method: 'POST',
         body: JSON.stringify({
           ...requestBody,
           replaceExisting,
+          replaceJobIds,
         }),
       })
       setPreview(null)
       seedJobStatus(response.job.id, response.job.status)
       await refreshJobs()
-      onToast(`Download job queued: ${response.job.id}. A start notification will appear when the worker picks it up.`)
+      onToast(`Download job queued: ${response.job.id}. Metadata will resolve in the job log.`)
     } catch (error) {
       onToast((error as Error).message)
     }
@@ -733,7 +733,7 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
   }
 
   return (
-    <Page title="Downloads" subtitle="Build one or more group folders, preview final filenames, then queue yt-dlp and transcode work on the NAS.">
+    <Page title="Downloads" subtitle="Choose a destination folder, preview final filenames when needed, then queue yt-dlp and transcode work on the NAS.">
       <section className="panel">
         <div className="row-space">
           <h2>Download groups</h2>
@@ -761,18 +761,17 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
           {groups.map((group, index) => (
             <div key={`${group.name}-${index}`} className="group-card">
               <label>
-                <span>Group label</span>
-                <input value={group.name} onChange={(event) => updateGroup(index, { name: event.target.value })} />
+                <span>Folder name</span>
+                <input
+                  value={downloadFolderName(group)}
+                  onChange={(event) => updateGroup(index, { name: event.target.value, newFolder: event.target.value })}
+                />
               </label>
               <FolderPicker
                 label="Base path"
                 value={group.basePath}
                 onChange={(value) => updateGroup(index, { basePath: value })}
               />
-              <label>
-                <span>New folder (optional)</span>
-                <input value={group.newFolder} onChange={(event) => updateGroup(index, { newFolder: event.target.value })} />
-              </label>
               <label>
                 <span>Links</span>
                 <textarea
@@ -968,8 +967,8 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
   return (
     <Page title="Jobs" subtitle="Queue state, progress, and detailed event logs.">
       <div className="two-column">
-        <div className="stack">
-          <section className="panel">
+        <div className="stack jobs-list-stack">
+          <section className="panel job-section">
             <h2>Queue</h2>
             <div className="table">
               {activeJobs.length === 0 ? (
@@ -986,7 +985,7 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
               )}
             </div>
           </section>
-          <section className="panel">
+          <section className={`panel job-section ${archiveOpen ? '' : 'job-section--collapsed'}`}>
             <div className="row-space">
               <h2>Archive</h2>
               <button
@@ -1012,9 +1011,7 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
                   ))
                 )}
               </div>
-            ) : (
-              <div className="terminal-block">Archive hidden until requested.</div>
-            )}
+            ) : null}
           </section>
         </div>
         <JobDetailPanel
@@ -1622,6 +1619,10 @@ function defaultDownloadGroups(): GroupDraft[] {
       fetchSubtitles: true,
     },
   ]
+}
+
+function downloadFolderName(group: GroupDraft) {
+  return (group.newFolder || group.name || '').trim()
 }
 
 function normalizeDownloadDrafts(value: GroupDraft[]) {

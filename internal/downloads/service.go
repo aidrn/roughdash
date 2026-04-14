@@ -56,6 +56,14 @@ type ResolvedGroup struct {
 	FetchSubtitles bool            `json:"fetchSubtitles"`
 }
 
+type PlannedGroup struct {
+	Name           string   `json:"name"`
+	TargetPath     string   `json:"targetPath"`
+	Links          []string `json:"links"`
+	Transcode      bool     `json:"transcode"`
+	FetchSubtitles bool     `json:"fetchSubtitles"`
+}
+
 type ResolvedVideo struct {
 	Link               string `json:"link"`
 	VideoID            string `json:"videoId"`
@@ -74,54 +82,120 @@ func NewService(cfg config.Config) *Service {
 	return &Service{cfg: cfg}
 }
 
-func (s *Service) Preview(ctx context.Context, request models.DownloadRequest) (models.DownloadPreview, []ResolvedGroup, error) {
+func (s *Service) Plan(_ context.Context, request models.DownloadRequest) (models.DownloadPreview, []PlannedGroup, int, error) {
 	preview := models.DownloadPreview{}
-	var groups []ResolvedGroup
+	plannedGroups := make([]PlannedGroup, 0, len(request.Groups))
+	linkCount := 0
+
+	if len(request.Groups) == 0 {
+		return preview, nil, 0, errors.New("at least one download group is required")
+	}
 
 	for _, group := range request.Groups {
-		targetPath, err := resolveTargetPath(s.cfg.NASRoot, group.BasePath, group.NewFolder)
-		if err != nil {
-			return preview, nil, err
+		links := make([]string, 0, len(group.Links))
+		for _, link := range group.Links {
+			link = strings.TrimSpace(link)
+			if link != "" {
+				links = append(links, link)
+			}
 		}
-		if err := system.EnsureWithinRoot(s.cfg.NASRoot, targetPath); err != nil {
-			return preview, nil, err
+		if len(links) == 0 {
+			return preview, nil, 0, errors.New("each download group needs at least one link")
 		}
 
-		resolvedGroup := ResolvedGroup{
-			Name:           group.Name,
+		targetPath, err := resolveTargetPath(s.cfg.NASRoot, group.BasePath, group.NewFolder)
+		if err != nil {
+			return preview, nil, 0, err
+		}
+		if err := system.EnsureWithinRoot(s.cfg.NASRoot, targetPath); err != nil {
+			return preview, nil, 0, err
+		}
+
+		name := strings.TrimSpace(group.Name)
+		if name == "" {
+			name = strings.TrimSpace(group.NewFolder)
+		}
+		if name == "" {
+			name = filepath.Base(targetPath)
+		}
+
+		plannedGroup := PlannedGroup{
+			Name:           name,
 			TargetPath:     targetPath,
+			Links:          links,
 			Transcode:      group.Transcode,
 			FetchSubtitles: group.FetchSubtitles,
 		}
-		groupPreview := models.DownloadGroupPreview{
-			Name:       group.Name,
+		plannedGroups = append(plannedGroups, plannedGroup)
+		preview.Groups = append(preview.Groups, models.DownloadGroupPreview{
+			Name:       name,
 			TargetPath: targetPath,
-		}
+		})
+		linkCount += len(links)
+	}
 
-		for _, link := range group.Links {
-			items, err := s.resolveLink(ctx, link, targetPath)
-			if err != nil {
-				return preview, nil, err
-			}
-			resolvedGroup.Videos = append(resolvedGroup.Videos, items...)
-			for _, item := range items {
-				groupPreview.Videos = append(groupPreview.Videos, models.DownloadVideoPreview{
-					Link:          item.Link,
-					VideoID:       item.VideoID,
-					Title:         item.Title,
-					Uploader:      item.Uploader,
-					PlaylistTitle: item.PlaylistTitle,
-					QualityLabel:  item.QualityLabel,
-					FinalPath:     item.FinalPath,
-				})
-			}
-		}
+	return preview, plannedGroups, linkCount, nil
+}
 
+func (s *Service) Preview(ctx context.Context, request models.DownloadRequest) (models.DownloadPreview, []ResolvedGroup, error) {
+	_, plannedGroups, _, err := s.Plan(ctx, request)
+	if err != nil {
+		return models.DownloadPreview{}, nil, err
+	}
+
+	preview, groups, err := s.ResolvePlan(ctx, plannedGroups)
+	if err != nil {
+		return models.DownloadPreview{}, nil, err
+	}
+	return preview, groups, nil
+}
+
+func (s *Service) ResolvePlan(ctx context.Context, plannedGroups []PlannedGroup) (models.DownloadPreview, []ResolvedGroup, error) {
+	preview := models.DownloadPreview{}
+	groups := make([]ResolvedGroup, 0, len(plannedGroups))
+	for _, group := range plannedGroups {
+		resolvedGroup, groupPreview, err := s.ResolvePlannedGroup(ctx, group)
+		if err != nil {
+			return preview, nil, err
+		}
 		groups = append(groups, resolvedGroup)
 		preview.Groups = append(preview.Groups, groupPreview)
 	}
-
 	return preview, groups, nil
+}
+
+func (s *Service) ResolvePlannedGroup(ctx context.Context, group PlannedGroup) (ResolvedGroup, models.DownloadGroupPreview, error) {
+	resolvedGroup := ResolvedGroup{
+		Name:           group.Name,
+		TargetPath:     group.TargetPath,
+		Transcode:      group.Transcode,
+		FetchSubtitles: group.FetchSubtitles,
+	}
+	groupPreview := models.DownloadGroupPreview{
+		Name:       group.Name,
+		TargetPath: group.TargetPath,
+	}
+
+	for _, link := range group.Links {
+		items, err := s.resolveLink(ctx, link, group.TargetPath)
+		if err != nil {
+			return resolvedGroup, groupPreview, err
+		}
+		resolvedGroup.Videos = append(resolvedGroup.Videos, items...)
+		for _, item := range items {
+			groupPreview.Videos = append(groupPreview.Videos, models.DownloadVideoPreview{
+				Link:          item.Link,
+				VideoID:       item.VideoID,
+				Title:         item.Title,
+				Uploader:      item.Uploader,
+				PlaylistTitle: item.PlaylistTitle,
+				QualityLabel:  item.QualityLabel,
+				FinalPath:     item.FinalPath,
+			})
+		}
+	}
+
+	return resolvedGroup, groupPreview, nil
 }
 
 func (s *Service) DownloadVideo(ctx context.Context, video ResolvedVideo, tempDir string, onProgress func(ProgressUpdate)) (string, error) {
@@ -665,7 +739,7 @@ func ytDLPCommand(ctx context.Context, args ...string) *exec.Cmd {
 	if runtime.GOOS == "linux" {
 		return exec.CommandContext(ctx, "python3", append([]string{"-m", "yt_dlp"}, withJSRuntime(args...)...)...)
 	}
-	return exec.CommandContext(ctx, "yt-dlp", args...)
+	return exec.CommandContext(ctx, "yt-dlp", withJSRuntime(args...)...)
 }
 
 func withJSRuntime(args ...string) []string {

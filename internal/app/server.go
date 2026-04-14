@@ -544,47 +544,31 @@ func (s *Server) handleDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	preview, groups, err := s.downloads.Preview(ctx, request)
+	preview, plannedGroups, linkCount, err := s.downloads.Plan(ctx, request)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	duplicates, err := s.findDownloadDuplicates(ctx, groups)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if len(duplicates) > 0 && !request.ReplaceExisting {
-		writeError(w, http.StatusConflict, fmt.Errorf("matching downloads already exist for %d video(s); confirmation required", len(duplicates)))
-		return
-	}
-	preview.Duplicates = duplicates
-	if request.ReplaceExisting {
-		for _, jobID := range activeDuplicateJobIDs(duplicates) {
-			if err := s.jobs.Cancel(ctx, jobID); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
+	if request.ReplaceExisting && len(request.ReplaceJobIDs) > 0 {
+		if err := s.cancelReplacementDownloadJobs(ctx, request.ReplaceJobIDs); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 	}
-	payload := map[string]any{
-		"groups": groups,
+	payload := downloadJobPayload{
+		PlannedGroups: plannedGroups,
 	}
-	videoCount := 0
-	for _, group := range preview.Groups {
-		videoCount += len(group.Videos)
-	}
-	job, err := s.store.CreateJob(ctx, models.JobTypeDownload, fmt.Sprintf("Download %d videos", videoCount), payload)
+	job, err := s.store.CreateJob(ctx, models.JobTypeDownload, fmt.Sprintf("Download %d link(s)", linkCount), payload)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	_ = s.jobs.AddEvent(ctx, job.ID, "info", "Job queued")
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", "Download metadata will be resolved by the worker")
 	user, _ := s.currentUser(r)
 	_ = s.store.RecordAudit(ctx, "job.download.created", username(user), job.ID, map[string]any{
-		"videos":          videoCount,
-		"replacedJobs":    duplicateJobIDs(duplicates),
-		"duplicateVideos": len(duplicates),
+		"links":        linkCount,
+		"replacedJobs": request.ReplaceJobIDs,
 	})
 	s.jobs.Wake()
 	writeJSON(w, http.StatusCreated, map[string]any{"job": job, "preview": preview})
@@ -829,15 +813,26 @@ func (s *Server) handleIngestJob(ctx context.Context, job models.Job) error {
 }
 
 func (s *Server) handleDownloadJob(ctx context.Context, job models.Job) error {
-	var payload struct {
-		Groups []downloads.ResolvedGroup `json:"groups"`
-	}
+	var payload downloadJobPayload
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {
 		return err
 	}
+	groups := payload.Groups
+	if len(groups) == 0 && len(payload.PlannedGroups) > 0 {
+		resolvedGroups, err := s.resolveDownloadJobMetadata(ctx, job, payload.PlannedGroups)
+		if err != nil {
+			return err
+		}
+		groups = resolvedGroups
+		payload.Groups = groups
+		payload.PlannedGroups = nil
+		if err := s.store.UpdateJobPayload(ctx, job.ID, payload); err != nil {
+			return err
+		}
+	}
 
 	total := 0
-	for _, group := range payload.Groups {
+	for _, group := range groups {
 		total += len(group.Videos)
 	}
 	if total == 0 {
@@ -845,7 +840,7 @@ func (s *Server) handleDownloadJob(ctx context.Context, job models.Job) error {
 	}
 
 	completed := 0
-	for _, group := range payload.Groups {
+	for _, group := range groups {
 		if err := os.MkdirAll(group.TargetPath, 0o755); err != nil {
 			return err
 		}
@@ -866,6 +861,33 @@ func (s *Server) handleDownloadJob(ctx context.Context, job models.Job) error {
 		}
 	}
 	return nil
+}
+
+type downloadJobPayload struct {
+	Groups        []downloads.ResolvedGroup `json:"groups,omitempty"`
+	PlannedGroups []downloads.PlannedGroup  `json:"plannedGroups,omitempty"`
+}
+
+func (s *Server) resolveDownloadJobMetadata(ctx context.Context, job models.Job, plannedGroups []downloads.PlannedGroup) ([]downloads.ResolvedGroup, error) {
+	linkCount := 0
+	for _, group := range plannedGroups {
+		linkCount += len(group.Links)
+	}
+	_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolving metadata for %d link(s)", linkCount))
+	_ = s.jobs.UpdateActivity(ctx, job.ID, "Resolving download metadata")
+
+	resolvedGroups := make([]downloads.ResolvedGroup, 0, len(plannedGroups))
+	for _, group := range plannedGroups {
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolving %s", group.Name))
+		resolvedGroup, _, err := s.downloads.ResolvePlannedGroup(ctx, group)
+		if err != nil {
+			return nil, fmt.Errorf("metadata resolution failed for %s: %w", group.Name, err)
+		}
+		resolvedGroups = append(resolvedGroups, resolvedGroup)
+		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolved %d video(s) for %s", len(resolvedGroup.Videos), group.Name))
+	}
+	_ = s.jobs.UpdateActivity(ctx, job.ID, "Metadata resolved")
+	return resolvedGroups, nil
 }
 
 func (s *Server) findDownloadDuplicates(ctx context.Context, groups []downloads.ResolvedGroup) ([]models.DownloadDuplicate, error) {
@@ -938,6 +960,35 @@ func duplicateJobIDs(duplicates []models.DownloadDuplicate) []string {
 		result = append(result, duplicate.MatchingJobID)
 	}
 	return result
+}
+
+func (s *Server) cancelReplacementDownloadJobs(ctx context.Context, jobIDs []string) error {
+	seen := make(map[string]struct{})
+	for _, jobID := range jobIDs {
+		jobID = strings.TrimSpace(jobID)
+		if jobID == "" {
+			continue
+		}
+		if _, exists := seen[jobID]; exists {
+			continue
+		}
+		seen[jobID] = struct{}{}
+
+		job, err := s.store.GetJob(ctx, jobID)
+		if err != nil {
+			return err
+		}
+		if job.Type != models.JobTypeDownload {
+			return fmt.Errorf("replacement job %s is not a download job", jobID)
+		}
+		if !isActiveJobStatus(job.Status) {
+			continue
+		}
+		if err := s.jobs.Cancel(ctx, jobID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func activeDuplicateJobIDs(duplicates []models.DownloadDuplicate) []string {

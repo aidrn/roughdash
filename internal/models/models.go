@@ -144,6 +144,7 @@ type FileSkip struct {
 type DownloadRequest struct {
 	Groups          []DownloadGroup `json:"groups"`
 	ReplaceExisting bool            `json:"replaceExisting,omitempty"`
+	ReplaceJobIDs   []string        `json:"replaceJobIds,omitempty"`
 }
 
 type DownloadGroup struct {

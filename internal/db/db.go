@@ -466,6 +466,19 @@ func (s *Store) UpdateJobActivity(ctx context.Context, jobID, activity string) e
 	return err
 }
 
+func (s *Store) UpdateJobPayload(ctx context.Context, jobID string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE jobs
+		SET payload = ?, updated_at = ?
+		WHERE id = ?;
+	`, body, time.Now().UTC(), jobID)
+	return err
+}
+
 func (s *Store) GetJob(ctx context.Context, jobID string) (*models.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, status, summary, activity, error, progress, payload, created_at, updated_at,

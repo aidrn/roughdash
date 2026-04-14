@@ -358,6 +358,24 @@ label span,
   gap: 1rem;
 }
 
+.jobs-list-stack {
+  align-content: start;
+  gap: 0.65rem;
+}
+
+.job-section {
+  gap: 0.65rem;
+}
+
+.job-section .table__row--job {
+  padding: 0.62rem 0.75rem;
+}
+
+.job-section--collapsed {
+  gap: 0;
+  padding-bottom: 0.65rem;
+}
+
 .row-actions,
 .row-space,
 .inline-toggle,
