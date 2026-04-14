@@ -413,28 +413,43 @@ func (s *Service) Transcode(ctx context.Context, sourcePath, subtitlePath, outpu
 	return subtitlesEmbedded, nil
 }
 
+func (s *Service) ResolveLink(ctx context.Context, link, targetPath string) ([]ResolvedVideo, error) {
+	return s.resolveLink(ctx, link, targetPath)
+}
+
 func (s *Service) resolveLink(ctx context.Context, link, targetPath string) ([]ResolvedVideo, error) {
-	meta, err := loadMetadata(ctx, link, false)
-	if err == nil && len(meta.Entries) > 0 {
-		var results []ResolvedVideo
-		for _, entry := range meta.Entries {
-			entryLink := entry.WebpageURL
-			if entryLink == "" && entry.ID != "" {
-				entryLink = "https://www.youtube.com/watch?v=" + entry.ID
+	return resolveLinkWithLoader(ctx, link, targetPath, loadMetadata)
+}
+
+type metadataLoader func(context.Context, string, bool) (ytMetadata, error)
+
+func resolveLinkWithLoader(ctx context.Context, link, targetPath string, load metadataLoader) ([]ResolvedVideo, error) {
+	meta, err := load(ctx, link, false)
+	if err == nil {
+		if len(meta.Entries) > 0 {
+			var results []ResolvedVideo
+			for _, entry := range meta.Entries {
+				entryLink := entry.WebpageURL
+				if entryLink == "" && entry.ID != "" {
+					entryLink = "https://www.youtube.com/watch?v=" + entry.ID
+				}
+				if entryLink == "" {
+					continue
+				}
+				full, err := load(ctx, entryLink, true)
+				if err != nil {
+					return nil, err
+				}
+				results = append(results, buildResolvedVideo(full, entryLink, targetPath))
 			}
-			if entryLink == "" {
-				continue
-			}
-			full, err := loadMetadata(ctx, entryLink, true)
-			if err != nil {
-				return nil, err
-			}
-			results = append(results, buildResolvedVideo(full, entryLink, targetPath))
+			return results, nil
 		}
-		return results, nil
+		if meta.ID != "" || meta.Title != "" || meta.WebpageURL != "" {
+			return []ResolvedVideo{buildResolvedVideo(meta, link, targetPath)}, nil
+		}
 	}
 
-	full, err := loadMetadata(ctx, link, true)
+	full, err := load(ctx, link, true)
 	if err != nil {
 		return nil, err
 	}

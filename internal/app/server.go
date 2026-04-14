@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -878,13 +879,41 @@ func (s *Server) resolveDownloadJobMetadata(ctx context.Context, job models.Job,
 
 	resolvedGroups := make([]downloads.ResolvedGroup, 0, len(plannedGroups))
 	warnings := []models.DownloadWarning{}
+	resolvedLinks := 0
 	for _, group := range plannedGroups {
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolving %s", group.Name))
-		resolvedGroup, _, groupWarnings := s.downloads.ResolvePlannedGroupLenient(ctx, group)
-		for _, warning := range groupWarnings {
-			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Skipped %s: %s", warning.Link, warning.Message))
+		resolvedGroup := downloads.ResolvedGroup{
+			Name:           group.Name,
+			TargetPath:     group.TargetPath,
+			Transcode:      group.Transcode,
+			FetchSubtitles: group.FetchSubtitles,
 		}
-		warnings = append(warnings, groupWarnings...)
+		for _, link := range group.Links {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+
+			resolvedLinks++
+			linkLabel := downloadLinkLabel(link)
+			activity := fmt.Sprintf("Resolving %d/%d %s", resolvedLinks, linkCount, linkLabel)
+			_ = s.jobs.UpdateActivity(ctx, job.ID, activity)
+			_ = s.jobs.AddEvent(ctx, job.ID, "info", activity)
+
+			items, err := s.downloads.ResolveLink(ctx, link, group.TargetPath)
+			if err != nil {
+				warning := models.DownloadWarning{
+					Link:    link,
+					Message: err.Error(),
+				}
+				warnings = append(warnings, warning)
+				_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Skipped %s: %s", warning.Link, warning.Message))
+				continue
+			}
+			resolvedGroup.Videos = append(resolvedGroup.Videos, items...)
+			_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolved %d video(s) from %s", len(items), linkLabel))
+		}
 		resolvedGroups = append(resolvedGroups, resolvedGroup)
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolved %d video(s) for %s", len(resolvedGroup.Videos), group.Name))
 	}
@@ -896,6 +925,36 @@ func (s *Server) resolveDownloadJobMetadata(ctx context.Context, job models.Job,
 	}
 	_ = s.jobs.UpdateActivity(ctx, job.ID, "Metadata resolved")
 	return resolvedGroups, nil
+}
+
+func downloadLinkLabel(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err == nil {
+		if id := parsed.Query().Get("v"); id != "" {
+			return id
+		}
+		if parsed.Host != "" {
+			path := strings.Trim(parsed.EscapedPath(), "/")
+			if path != "" {
+				return truncateMiddle(path, 48)
+			}
+			return parsed.Host
+		}
+	}
+	return truncateMiddle(trimmed, 48)
+}
+
+func truncateMiddle(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	prefixLength := (limit - 3) / 2
+	suffixLength := limit - 3 - prefixLength
+	return value[:prefixLength] + "..." + value[len(value)-suffixLength:]
 }
 
 func countDownloadVideos(groups []downloads.ResolvedGroup) int {

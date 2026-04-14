@@ -2,6 +2,7 @@ package downloads
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"roughdash/internal/config"
@@ -54,5 +55,56 @@ func TestPlanDoesNotResolveMetadata(t *testing.T) {
 	}
 	if len(preview.Groups) != 1 || len(preview.Groups[0].Videos) != 0 {
 		t.Fatalf("preview should contain only lightweight group data: %#v", preview.Groups)
+	}
+}
+
+func TestResolveLinkReusesSuccessfulSingleVideoMetadata(t *testing.T) {
+	calls := 0
+	items, err := resolveLinkWithLoader(context.Background(), "https://example.com/watch?v=abc123", "/mnt/media", func(_ context.Context, link string, noPlaylist bool) (ytMetadata, error) {
+		calls++
+		if noPlaylist {
+			t.Fatalf("single-video metadata should be reused instead of probing %s again with --no-playlist", link)
+		}
+		return ytMetadata{
+			ID:         "abc123",
+			Title:      "Single video",
+			WebpageURL: "https://example.com/watch?v=abc123",
+			Uploader:   "Uploader",
+			Height:     1080,
+			FPS:        25,
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("resolve link failed: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one metadata call, got %d", calls)
+	}
+	if len(items) != 1 || items[0].VideoID != "abc123" {
+		t.Fatalf("unexpected resolved items: %#v", items)
+	}
+}
+
+func TestResolveLinkFallsBackToNoPlaylistWhenDiscoveryFails(t *testing.T) {
+	var noPlaylistCalls int
+	items, err := resolveLinkWithLoader(context.Background(), "https://example.com/watch?v=abc123", "/mnt/media", func(_ context.Context, _ string, noPlaylist bool) (ytMetadata, error) {
+		if !noPlaylist {
+			return ytMetadata{}, errors.New("discovery failed")
+		}
+		noPlaylistCalls++
+		return ytMetadata{
+			ID:       "abc123",
+			Title:    "Single video",
+			Uploader: "Uploader",
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("resolve link failed: %v", err)
+	}
+	if noPlaylistCalls != 1 {
+		t.Fatalf("expected one fallback metadata call, got %d", noPlaylistCalls)
+	}
+	if len(items) != 1 || items[0].VideoID != "abc123" {
+		t.Fatalf("unexpected resolved items: %#v", items)
 	}
 }
