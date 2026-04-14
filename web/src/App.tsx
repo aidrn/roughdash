@@ -672,6 +672,8 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
       setPreview(response.preview)
       if ((response.preview.duplicates ?? []).length > 0) {
         onToast(`Preview found ${response.preview.duplicates?.length ?? 0} duplicate video match(es).`)
+      } else if ((response.preview.warnings ?? []).length > 0) {
+        onToast(`Preview skipped ${response.preview.warnings?.length ?? 0} unavailable link(s).`)
       } else {
         onToast('Download preview ready.')
       }
@@ -719,8 +721,8 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
       })
       setPreview(null)
       seedJobStatus(response.job.id, response.job.status)
-      await refreshJobs()
       onToast(`Download job queued: ${response.job.id}. Metadata will resolve in the job log.`)
+      void refreshJobs()
     } catch (error) {
       onToast((error as Error).message)
     }
@@ -815,6 +817,11 @@ function DownloadsPage({ onToast }: { onToast: (message: string) => void }) {
               {(preview.duplicates ?? []).length > 0 ? (
                 <div className="callout">
                   {preview.duplicates?.length} duplicate video match(es) found. Queueing will ask for confirmation before replacing any active duplicate jobs.
+                </div>
+              ) : null}
+              {(preview.warnings ?? []).length > 0 ? (
+                <div className="callout">
+                  {preview.warnings?.length} unavailable link(s) will be skipped. Check the job log for details.
                 </div>
               ) : null}
               {preview.groups.map((group) => (

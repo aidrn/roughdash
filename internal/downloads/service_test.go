@@ -32,7 +32,7 @@ func TestPlanDoesNotResolveMetadata(t *testing.T) {
 				Name:      "Folder",
 				BasePath:  "/mnt/media",
 				NewFolder: "Folder",
-				Links:     []string{" https://example.com/watch?v=abc123 ", ""},
+				Links:     []string{" https://example.com/watch?v=abc123 ", "", "https://example.com/watch?v=abc123"},
 				Transcode: true,
 			},
 		},

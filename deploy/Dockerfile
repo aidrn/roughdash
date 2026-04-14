@@ -17,13 +17,17 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/roughdash-helper ./cm
 FROM --platform=linux/amd64 debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates \
+  curl \
   ffmpeg \
   nodejs \
   sqlite3 \
+  unzip \
   python3 \
   python3-pip \
   && rm -rf /var/lib/apt/lists/*
 RUN python3 -m pip install --break-system-packages yt-dlp
+ENV DENO_INSTALL=/usr/local
+RUN curl -fsSL https://deno.land/install.sh | sh && deno --version
 WORKDIR /app
 COPY --from=go-build /out/roughdashd /usr/local/bin/roughdashd
 COPY --from=go-build /app/web/dist /app/web/dist

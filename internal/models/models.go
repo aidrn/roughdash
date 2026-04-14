@@ -159,6 +159,7 @@ type DownloadGroup struct {
 type DownloadPreview struct {
 	Groups     []DownloadGroupPreview `json:"groups"`
 	Duplicates []DownloadDuplicate    `json:"duplicates,omitempty"`
+	Warnings   []DownloadWarning      `json:"warnings,omitempty"`
 }
 
 type DownloadGroupPreview struct {
@@ -185,6 +186,11 @@ type DownloadDuplicate struct {
 	MatchingStatus string `json:"matchingStatus"`
 	TargetPath     string `json:"targetPath"`
 	Active         bool   `json:"active"`
+}
+
+type DownloadWarning struct {
+	Link    string `json:"link"`
+	Message string `json:"message"`
 }
 
 type MediaRecord struct {

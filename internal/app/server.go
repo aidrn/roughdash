@@ -877,17 +877,33 @@ func (s *Server) resolveDownloadJobMetadata(ctx context.Context, job models.Job,
 	_ = s.jobs.UpdateActivity(ctx, job.ID, "Resolving download metadata")
 
 	resolvedGroups := make([]downloads.ResolvedGroup, 0, len(plannedGroups))
+	warnings := []models.DownloadWarning{}
 	for _, group := range plannedGroups {
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolving %s", group.Name))
-		resolvedGroup, _, err := s.downloads.ResolvePlannedGroup(ctx, group)
-		if err != nil {
-			return nil, fmt.Errorf("metadata resolution failed for %s: %w", group.Name, err)
+		resolvedGroup, _, groupWarnings := s.downloads.ResolvePlannedGroupLenient(ctx, group)
+		for _, warning := range groupWarnings {
+			_ = s.jobs.AddEvent(ctx, job.ID, "warning", fmt.Sprintf("Skipped %s: %s", warning.Link, warning.Message))
 		}
+		warnings = append(warnings, groupWarnings...)
 		resolvedGroups = append(resolvedGroups, resolvedGroup)
 		_ = s.jobs.AddEvent(ctx, job.ID, "info", fmt.Sprintf("Resolved %d video(s) for %s", len(resolvedGroup.Videos), group.Name))
 	}
+	if countDownloadVideos(resolvedGroups) == 0 {
+		if len(warnings) > 0 {
+			return nil, fmt.Errorf("no videos could be resolved; first error: %s", warnings[0].Message)
+		}
+		return nil, errors.New("no videos could be resolved")
+	}
 	_ = s.jobs.UpdateActivity(ctx, job.ID, "Metadata resolved")
 	return resolvedGroups, nil
+}
+
+func countDownloadVideos(groups []downloads.ResolvedGroup) int {
+	count := 0
+	for _, group := range groups {
+		count += len(group.Videos)
+	}
+	return count
 }
 
 func (s *Server) findDownloadDuplicates(ctx context.Context, groups []downloads.ResolvedGroup) ([]models.DownloadDuplicate, error) {

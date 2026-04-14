@@ -93,11 +93,17 @@ func (s *Service) Plan(_ context.Context, request models.DownloadRequest) (model
 
 	for _, group := range request.Groups {
 		links := make([]string, 0, len(group.Links))
+		seenLinks := make(map[string]struct{})
 		for _, link := range group.Links {
 			link = strings.TrimSpace(link)
-			if link != "" {
-				links = append(links, link)
+			if link == "" {
+				continue
 			}
+			if _, exists := seenLinks[link]; exists {
+				continue
+			}
+			seenLinks[link] = struct{}{}
+			links = append(links, link)
 		}
 		if len(links) == 0 {
 			return preview, nil, 0, errors.New("each download group needs at least one link")
@@ -143,10 +149,11 @@ func (s *Service) Preview(ctx context.Context, request models.DownloadRequest) (
 		return models.DownloadPreview{}, nil, err
 	}
 
-	preview, groups, err := s.ResolvePlan(ctx, plannedGroups)
+	preview, groups, warnings, err := s.ResolvePlanLenient(ctx, plannedGroups)
 	if err != nil {
 		return models.DownloadPreview{}, nil, err
 	}
+	preview.Warnings = warnings
 	return preview, groups, nil
 }
 
@@ -162,6 +169,25 @@ func (s *Service) ResolvePlan(ctx context.Context, plannedGroups []PlannedGroup)
 		preview.Groups = append(preview.Groups, groupPreview)
 	}
 	return preview, groups, nil
+}
+
+func (s *Service) ResolvePlanLenient(ctx context.Context, plannedGroups []PlannedGroup) (models.DownloadPreview, []ResolvedGroup, []models.DownloadWarning, error) {
+	preview := models.DownloadPreview{}
+	groups := make([]ResolvedGroup, 0, len(plannedGroups))
+	warnings := []models.DownloadWarning{}
+	for _, group := range plannedGroups {
+		resolvedGroup, groupPreview, groupWarnings := s.ResolvePlannedGroupLenient(ctx, group)
+		groups = append(groups, resolvedGroup)
+		preview.Groups = append(preview.Groups, groupPreview)
+		warnings = append(warnings, groupWarnings...)
+	}
+	if countResolvedVideos(groups) == 0 {
+		if len(warnings) > 0 {
+			return preview, groups, warnings, fmt.Errorf("no videos could be resolved; first error: %s", warnings[0].Message)
+		}
+		return preview, groups, warnings, errors.New("no videos could be resolved")
+	}
+	return preview, groups, warnings, nil
 }
 
 func (s *Service) ResolvePlannedGroup(ctx context.Context, group PlannedGroup) (ResolvedGroup, models.DownloadGroupPreview, error) {
@@ -196,6 +222,53 @@ func (s *Service) ResolvePlannedGroup(ctx context.Context, group PlannedGroup) (
 	}
 
 	return resolvedGroup, groupPreview, nil
+}
+
+func (s *Service) ResolvePlannedGroupLenient(ctx context.Context, group PlannedGroup) (ResolvedGroup, models.DownloadGroupPreview, []models.DownloadWarning) {
+	resolvedGroup := ResolvedGroup{
+		Name:           group.Name,
+		TargetPath:     group.TargetPath,
+		Transcode:      group.Transcode,
+		FetchSubtitles: group.FetchSubtitles,
+	}
+	groupPreview := models.DownloadGroupPreview{
+		Name:       group.Name,
+		TargetPath: group.TargetPath,
+	}
+	warnings := []models.DownloadWarning{}
+
+	for _, link := range group.Links {
+		items, err := s.resolveLink(ctx, link, group.TargetPath)
+		if err != nil {
+			warnings = append(warnings, models.DownloadWarning{
+				Link:    link,
+				Message: err.Error(),
+			})
+			continue
+		}
+		resolvedGroup.Videos = append(resolvedGroup.Videos, items...)
+		for _, item := range items {
+			groupPreview.Videos = append(groupPreview.Videos, models.DownloadVideoPreview{
+				Link:          item.Link,
+				VideoID:       item.VideoID,
+				Title:         item.Title,
+				Uploader:      item.Uploader,
+				PlaylistTitle: item.PlaylistTitle,
+				QualityLabel:  item.QualityLabel,
+				FinalPath:     item.FinalPath,
+			})
+		}
+	}
+
+	return resolvedGroup, groupPreview, warnings
+}
+
+func countResolvedVideos(groups []ResolvedGroup) int {
+	count := 0
+	for _, group := range groups {
+		count += len(group.Videos)
+	}
+	return count
 }
 
 func (s *Service) DownloadVideo(ctx context.Context, video ResolvedVideo, tempDir string, onProgress func(ProgressUpdate)) (string, error) {
@@ -743,11 +816,14 @@ func ytDLPCommand(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 func withJSRuntime(args ...string) []string {
+	if path, err := exec.LookPath("deno"); err == nil && path != "" {
+		return append([]string{"--remote-components", "ejs:github", "--js-runtimes", fmt.Sprintf("deno:%s", path)}, args...)
+	}
 	if path, err := exec.LookPath("node"); err == nil && path != "" {
-		return append([]string{"--js-runtimes", "node"}, args...)
+		return append([]string{"--remote-components", "ejs:github", "--js-runtimes", "node"}, args...)
 	}
 	if path, err := exec.LookPath("nodejs"); err == nil && path != "" {
-		return append([]string{"--js-runtimes", fmt.Sprintf("node:%s", path)}, args...)
+		return append([]string{"--remote-components", "ejs:github", "--js-runtimes", fmt.Sprintf("node:%s", path)}, args...)
 	}
 	return args
 }

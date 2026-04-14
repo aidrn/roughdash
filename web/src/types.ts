@@ -110,4 +110,8 @@ export type DownloadPreview = {
     targetPath: string
     active: boolean
   }>
+  warnings?: Array<{
+    link: string
+    message: string
+  }>
 }
