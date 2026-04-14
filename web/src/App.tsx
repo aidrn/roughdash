@@ -974,8 +974,8 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
   return (
     <Page title="Jobs" subtitle="Queue state, progress, and detailed event logs.">
       <div className="two-column">
-        <div className="stack jobs-list-stack">
-          <section className="panel job-section">
+        <div className="stack">
+          <section className="panel">
             <h2>Queue</h2>
             <div className="table">
               {activeJobs.length === 0 ? (
@@ -992,7 +992,7 @@ function JobsPage({ onToast }: { onToast: (message: string) => void }) {
               )}
             </div>
           </section>
-          <section className={`panel job-section ${archiveOpen ? '' : 'job-section--collapsed'}`}>
+          <section className={`panel ${archiveOpen ? '' : 'panel--collapsed'}`}>
             <div className="row-space">
               <h2>Archive</h2>
               <button
