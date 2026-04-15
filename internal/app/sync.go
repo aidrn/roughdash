@@ -208,6 +208,83 @@ func (s *Server) handleSyncItemUpsert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"item": saved})
 }
 
+func (s *Server) handleSyncItemContent(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	project, err := s.store.GetSyncProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, statusForStoreError(err), err)
+		return
+	}
+	if !project.Enabled {
+		writeError(w, http.StatusBadRequest, errors.New("sync project is disabled"))
+		return
+	}
+	item, err := s.store.GetSyncItem(r.Context(), r.PathValue("itemID"))
+	if err != nil {
+		writeError(w, statusForStoreError(err), err)
+		return
+	}
+	if item.ProjectID != project.ID {
+		writeError(w, http.StatusBadRequest, errors.New("item does not belong to project"))
+		return
+	}
+	if item.Tombstoned {
+		writeError(w, http.StatusGone, errors.New("sync item is tombstoned"))
+		return
+	}
+	if item.Kind != models.SyncItemKindFile {
+		writeError(w, http.StatusBadRequest, errors.New("sync item is not a file"))
+		return
+	}
+	relativePath, err := normalizeSyncRelativePath(item.RelativePath)
+	if err != nil || relativePath == "" {
+		writeError(w, http.StatusBadRequest, errors.New("sync item has invalid relativePath"))
+		return
+	}
+	source := filepath.Join(project.RootPath, filepath.FromSlash(relativePath))
+	if err := system.EnsureWithinRoot(project.RootPath, source); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(project.RootPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolvedSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err := system.EnsureWithinRoot(resolvedRoot, resolvedSource); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	file, err := os.Open(resolvedSource)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, errors.New("sync item path is a directory"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("X-Roughdash-Project-ID", project.ID)
+	w.Header().Set("X-Roughdash-Item-ID", item.ID)
+	w.Header().Set("X-Roughdash-Content-Hash", item.ContentHash)
+	w.Header().Set("X-Roughdash-Revision", strconv.FormatInt(item.Revision, 10))
+	http.ServeContent(w, r, item.Name, info.ModTime(), file)
+}
+
 func (s *Server) handleSyncDevicesList(w http.ResponseWriter, r *http.Request) {
 	devices, err := s.store.ListSyncDevices(r.Context())
 	if err != nil {

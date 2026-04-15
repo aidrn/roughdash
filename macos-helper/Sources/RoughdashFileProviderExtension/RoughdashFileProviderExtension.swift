@@ -1,9 +1,10 @@
+import CryptoKit
 import FileProvider
 import Foundation
 import OSLog
 import RoughdashHelperCore
 
-final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedExtension, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.roughdash.helper", category: "file-provider")
     private let domain: NSFileProviderDomain
     private let catalog = LocalCatalog()
@@ -50,10 +51,38 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        // The real implementation hydrates through TransferClient, writes to the
-        // provider storage URL, and returns that file URL with the updated item.
-        completionHandler(nil, nil, NSFileProviderError(.serverUnreachable))
-        progress.completedUnitCount = 1
+        let fetch = FileProviderContentFetch(progress: progress, completionHandler: completionHandler)
+        let itemID = itemIdentifier.rawValue
+
+        Task {
+            do {
+                let snapshot = RoughdashExtensionStorage.readSnapshot(for: domain)
+                guard let item = snapshot.items.first(where: { $0.id == itemID && !$0.tombstoned }) else {
+                    throw NSFileProviderError(.noSuchItem)
+                }
+                guard item.kind == "file" else {
+                    throw NSFileProviderError(.noSuchItem)
+                }
+                guard let serverURL = URL(string: snapshot.serverURL),
+                      !snapshot.helperID.isEmpty,
+                      let helperToken = snapshot.helperToken,
+                      !helperToken.isEmpty else {
+                    throw NSFileProviderError(.notAuthenticated)
+                }
+
+                let api = RoughdashAPIClient(baseURL: serverURL, helperID: snapshot.helperID, helperToken: helperToken)
+                let content = try await api.downloadItemContent(projectID: item.projectId, itemID: item.id)
+                try Self.verify(content: content.data, expectedHash: item.contentHash)
+                let fileURL = try writeTemporaryContent(content.data, for: item)
+
+                logger.info("Hydrated File Provider item \(item.id, privacy: .public) to \(fileURL.path, privacy: .public)")
+                fetch.complete(fileURL, RoughdashProviderItem(item: item), nil)
+            } catch {
+                logger.error("Could not hydrate File Provider item \(itemID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                fetch.complete(nil, nil, error)
+            }
+        }
+
         return progress
     }
 
@@ -104,5 +133,76 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         RoughdashEnumerator(containerIdentifier: containerItemIdentifier, domain: domain, catalog: catalog)
+    }
+
+    private func writeTemporaryContent(_ data: Data, for item: SyncItem) throws -> URL {
+        let baseURL: URL
+        if let manager = NSFileProviderManager(for: domain) {
+            baseURL = try manager.temporaryDirectoryURL()
+        } else {
+            baseURL = FileManager.default.temporaryDirectory
+        }
+
+        let didAccess = baseURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                baseURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let directory = baseURL.appendingPathComponent("RoughdashHydration", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let safeName = item.name.replacingOccurrences(of: "/", with: "-")
+        let fileURL = directory.appendingPathComponent("\(item.id)-\(safeName)", isDirectory: false)
+        try data.write(to: fileURL, options: .atomic)
+        return fileURL
+    }
+
+    private static func verify(content data: Data, expectedHash: String) throws {
+        guard isSHA256(expectedHash) else {
+            return
+        }
+        let actualHash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard actualHash == expectedHash else {
+            throw HydrationError.hashMismatch
+        }
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        guard value.count == 64 else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (48...57).contains(scalar.value) || (97...102).contains(scalar.value)
+        }
+    }
+}
+
+private final class FileProviderContentFetch: @unchecked Sendable {
+    private let progress: Progress
+    private let completionHandler: (URL?, NSFileProviderItem?, Error?) -> Void
+
+    init(
+        progress: Progress,
+        completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
+    ) {
+        self.progress = progress
+        self.completionHandler = completionHandler
+    }
+
+    func complete(_ url: URL?, _ item: NSFileProviderItem?, _ error: Error?) {
+        progress.completedUnitCount = 1
+        completionHandler(url, item, error)
+    }
+}
+
+private enum HydrationError: Error, LocalizedError {
+    case hashMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .hashMismatch:
+            return "Downloaded file hash did not match the sync catalog."
+        }
     }
 }

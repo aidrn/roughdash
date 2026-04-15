@@ -40,6 +40,18 @@ public actor RoughdashAPIClient {
         return response.items
     }
 
+    public func downloadItemContent(projectID: String, itemID: String) async throws -> DownloadedSyncItemContent {
+        let request = try urlRequest("GET", "/api/sync/projects/\(projectID)/items/\(itemID)/content")
+        let (body, response) = try await session.data(for: request)
+        try validate(response: response, body: body)
+        let http = response as? HTTPURLResponse
+        return DownloadedSyncItemContent(
+            data: body,
+            contentHash: http?.value(forHTTPHeaderField: "X-Roughdash-Content-Hash"),
+            revision: http?.value(forHTTPHeaderField: "X-Roughdash-Revision").flatMap(Int64.init)
+        )
+    }
+
     public func upsertPin(_ pin: SyncPin) async throws -> SyncPin {
         let response: PinResponse = try await request("POST", "/api/sync/pins", body: pin)
         return response.pin
@@ -134,3 +146,15 @@ private struct ConflictsResponse: Decodable { var conflicts: [SyncConflict] }
 private struct TransferResponse: Decodable { var transfer: TransferSession }
 private struct ChunkResponse: Decodable { var chunk: TransferChunkReceipt }
 private struct ErrorResponse: Decodable { var error: String }
+
+public struct DownloadedSyncItemContent: Sendable {
+    public var data: Data
+    public var contentHash: String?
+    public var revision: Int64?
+
+    public init(data: Data, contentHash: String? = nil, revision: Int64? = nil) {
+        self.data = data
+        self.contentHash = contentHash
+        self.revision = revision
+    }
+}

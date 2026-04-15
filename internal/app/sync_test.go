@@ -223,6 +223,163 @@ func TestSyncTransferCreatesConflictForStaleBaseRevision(t *testing.T) {
 	}
 }
 
+func TestSyncItemContentDownloadStreamsProjectFile(t *testing.T) {
+	server := newSyncTestServer(t)
+	handler := server.Handler()
+	ctx := context.Background()
+
+	helper, token := createSyncTestHelper(t, server, "download-helper")
+	projectRoot := filepath.Join(server.cfg.NASRoot, "DownloadProject")
+	if err := os.MkdirAll(filepath.Join(projectRoot, "Folder"), 0o755); err != nil {
+		t.Fatalf("mkdir project root: %v", err)
+	}
+	payload := []byte("roughdash hydrate payload\n")
+	if err := os.WriteFile(filepath.Join(projectRoot, "Folder", "readme.txt"), payload, 0o644); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	sum := sha256.Sum256(payload)
+	project, err := server.store.CreateSyncProject(ctx, models.SyncProject{
+		Name:         "DownloadProject",
+		RootPath:     projectRoot,
+		Enabled:      true,
+		IgnorePolicy: "default-system-junk",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	item, err := server.store.UpsertSyncItem(ctx, models.SyncItem{
+		ProjectID:    project.ID,
+		ParentID:     "root",
+		RelativePath: "Folder/readme.txt",
+		Name:         "readme.txt",
+		Kind:         models.SyncItemKindFile,
+		Size:         int64(len(payload)),
+		ContentHash:  hex.EncodeToString(sum[:]),
+		MetadataHash: "metadata",
+		Revision:     7,
+	})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/sync/projects/"+project.ID+"/items/"+item.ID+"/content", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("X-Roughdash-Helper-ID", helper.ID)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("download content: got %d: %s", response.Code, response.Body.String())
+	}
+	if !bytes.Equal(response.Body.Bytes(), payload) {
+		t.Fatalf("download payload mismatch: %q", response.Body.String())
+	}
+	if got := response.Header().Get("X-Roughdash-Content-Hash"); got != hex.EncodeToString(sum[:]) {
+		t.Fatalf("unexpected hash header: %q", got)
+	}
+	if got := response.Header().Get("X-Roughdash-Revision"); got != "7" {
+		t.Fatalf("unexpected revision header: %q", got)
+	}
+}
+
+func TestSyncItemContentDownloadRejectsInvalidCatalogItems(t *testing.T) {
+	server := newSyncTestServer(t)
+	handler := server.Handler()
+	ctx := context.Background()
+
+	helper, token := createSyncTestHelper(t, server, "invalid-download-helper")
+	projectRoot := filepath.Join(server.cfg.NASRoot, "InvalidDownloadProject")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("mkdir project root: %v", err)
+	}
+	project, err := server.store.CreateSyncProject(ctx, models.SyncProject{
+		Name:         "InvalidDownloadProject",
+		RootPath:     projectRoot,
+		Enabled:      true,
+		IgnorePolicy: "default-system-junk",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	directoryItem, err := server.store.UpsertSyncItem(ctx, models.SyncItem{
+		ProjectID:    project.ID,
+		ParentID:     "root",
+		RelativePath: "Folder",
+		Name:         "Folder",
+		Kind:         models.SyncItemKindDirectory,
+		ContentHash:  "dir",
+		MetadataHash: "dir",
+		Revision:     1,
+	})
+	if err != nil {
+		t.Fatalf("create directory item: %v", err)
+	}
+	tombstonedItem, err := server.store.UpsertSyncItem(ctx, models.SyncItem{
+		ProjectID:    project.ID,
+		ParentID:     "root",
+		RelativePath: "deleted.txt",
+		Name:         "deleted.txt",
+		Kind:         models.SyncItemKindFile,
+		ContentHash:  "deleted",
+		MetadataHash: "deleted",
+		Revision:     2,
+		Tombstoned:   true,
+	})
+	if err != nil {
+		t.Fatalf("create tombstoned item: %v", err)
+	}
+	escapingItem, err := server.store.UpsertSyncItem(ctx, models.SyncItem{
+		ProjectID:    project.ID,
+		ParentID:     "root",
+		RelativePath: "../escape.txt",
+		Name:         "escape.txt",
+		Kind:         models.SyncItemKindFile,
+		ContentHash:  "escape",
+		MetadataHash: "escape",
+		Revision:     3,
+	})
+	if err != nil {
+		t.Fatalf("create escaping item: %v", err)
+	}
+	outsidePath := filepath.Join(server.cfg.NASRoot, "outside-download.txt")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(projectRoot, "linked-outside.txt")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	symlinkItem, err := server.store.UpsertSyncItem(ctx, models.SyncItem{
+		ProjectID:    project.ID,
+		ParentID:     "root",
+		RelativePath: "linked-outside.txt",
+		Name:         "linked-outside.txt",
+		Kind:         models.SyncItemKindFile,
+		ContentHash:  "linked",
+		MetadataHash: "linked",
+		Revision:     4,
+	})
+	if err != nil {
+		t.Fatalf("create symlink item: %v", err)
+	}
+
+	assertDownloadStatus := func(itemID string, want int) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/api/sync/projects/"+project.ID+"/items/"+itemID+"/content", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-Roughdash-Helper-ID", helper.ID)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != want {
+			t.Fatalf("download %s: got %d want %d: %s", itemID, response.Code, want, response.Body.String())
+		}
+	}
+
+	assertDownloadStatus(directoryItem.ID, http.StatusBadRequest)
+	assertDownloadStatus(tombstonedItem.ID, http.StatusGone)
+	assertDownloadStatus(escapingItem.ID, http.StatusBadRequest)
+	assertDownloadStatus(symlinkItem.ID, http.StatusBadRequest)
+}
+
 func TestSyncDisposableNASPublicAPISmoke(t *testing.T) {
 	server := newSyncTestServer(t)
 	httpServer := httptest.NewServer(server.Handler())

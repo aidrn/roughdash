@@ -129,6 +129,7 @@ final class HelperAppState {
         }
         serverURL = snapshot.serverURL
         helperID = snapshot.helperID
+        helperToken = snapshot.helperToken ?? ""
         domainIdentifier = snapshot.fileProviderDomainIdentifier ?? ""
         projects = snapshot.projects
         items = snapshot.items
@@ -161,6 +162,7 @@ final class HelperAppState {
         let snapshot = HelperSnapshot(
             serverURL: serverURL,
             helperID: helperID,
+            helperToken: helperToken.isEmpty ? nil : helperToken,
             selectedVolumePath: selectedVolumeURL?.path,
             selectedVolumeBookmark: selectedVolumeBookmark,
             volumeUUID: volumeCheck?.volumeUUID,

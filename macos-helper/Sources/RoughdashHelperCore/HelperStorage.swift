@@ -3,6 +3,7 @@ import Foundation
 public struct HelperSnapshot: Codable, Sendable {
     public var serverURL: String
     public var helperID: String
+    public var helperToken: String?
     public var selectedVolumePath: String?
     public var selectedVolumeBookmark: Data?
     public var volumeUUID: String?
@@ -16,6 +17,7 @@ public struct HelperSnapshot: Codable, Sendable {
     public init(
         serverURL: String,
         helperID: String,
+        helperToken: String? = nil,
         selectedVolumePath: String? = nil,
         selectedVolumeBookmark: Data? = nil,
         volumeUUID: String? = nil,
@@ -28,6 +30,7 @@ public struct HelperSnapshot: Codable, Sendable {
     ) {
         self.serverURL = serverURL
         self.helperID = helperID
+        self.helperToken = helperToken
         self.selectedVolumePath = selectedVolumePath
         self.selectedVolumeBookmark = selectedVolumeBookmark
         self.volumeUUID = volumeUUID
