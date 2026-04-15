@@ -25,6 +25,14 @@ public struct VolumeValidator {
         if isReadOnly {
             return VolumeCheck(url: url, volumeUUID: uuid, isSupported: false, reason: "The selected volume is read-only.")
         }
+        if !FileManager.default.isWritableFile(atPath: url.path) {
+            return VolumeCheck(
+                url: url,
+                volumeUUID: uuid,
+                isSupported: false,
+                reason: "The selected volume root is not writable by the current user. Run `sudo chown \(NSUserName()):staff \(url.path)` and register the Roughdash domain again."
+            )
+        }
         if !isLocal {
             return VolumeCheck(url: url, volumeUUID: uuid, isSupported: false, reason: "The selected volume is not local storage.")
         }

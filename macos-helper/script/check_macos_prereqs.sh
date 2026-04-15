@@ -62,4 +62,14 @@ check "volume ownership is enabled" "Owners:[[:space:]]+Enabled" || {
   failed=1
 }
 
+root_write_test="$(mktemp "$volume/.roughdash-prereq-write.XXXXXX" 2>/dev/null || true)"
+if [[ -n "$root_write_test" ]]; then
+  rm -f "$root_write_test"
+  echo "OK: current user can write to volume root"
+else
+  echo "FAIL: current user can write to volume root"
+  echo "      Fix with: sudo chown \"$(id -un):$(id -gn)\" \"$volume\""
+  failed=1
+fi
+
 exit "$failed"
