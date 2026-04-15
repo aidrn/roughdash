@@ -1,8 +1,10 @@
 import FileProvider
 import Foundation
+import OSLog
 import RoughdashHelperCore
 
 final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+    private let logger = Logger(subsystem: "com.roughdash.helper", category: "file-provider")
     private let domain: NSFileProviderDomain
     private let catalog = LocalCatalog()
 
@@ -21,11 +23,22 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
+        let snapshot = RoughdashExtensionStorage.readSnapshot(for: domain)
+
         if identifier == .rootContainer {
             completionHandler(RoughdashRootProviderItem(domain: domain), nil)
+        } else if identifier == .trashContainer {
+            completionHandler(RoughdashTrashProviderItem(), nil)
+        } else if let projectID = RoughdashFileProviderIdentifiers.projectID(from: identifier),
+                  let project = snapshot.projects.first(where: { $0.id == projectID && $0.enabled }) {
+            completionHandler(RoughdashProjectProviderItem(project: project), nil)
+        } else if let item = snapshot.items.first(where: { $0.id == identifier.rawValue && !$0.tombstoned }) {
+            completionHandler(RoughdashProviderItem(item: item), nil)
         } else {
+            logger.error("No File Provider item found for \(identifier.rawValue, privacy: .public)")
             completionHandler(nil, NSFileProviderError(.noSuchItem))
         }
+
         progress.completedUnitCount = 1
         return progress
     }
@@ -90,6 +103,6 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     }
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        RoughdashEnumerator(containerIdentifier: containerItemIdentifier, catalog: catalog)
+        RoughdashEnumerator(containerIdentifier: containerItemIdentifier, domain: domain, catalog: catalog)
     }
 }

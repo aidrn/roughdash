@@ -1,3 +1,4 @@
+import FileProvider
 import Foundation
 import Observation
 import OSLog
@@ -73,12 +74,13 @@ final class HelperAppState {
                 helperID: helperID
             )
             domainIdentifier = registration.identifier
-            persistState()
             if registration.isExternalVolumeDomain {
                 statusMessage = "Registered Roughdash File Provider domain on \(selectedVolumeURL.path)."
             } else {
                 statusMessage = "Registered Roughdash File Provider domain using standard macOS storage. External-volume File Provider domains returned NSFeatureUnsupportedError on this Mac."
             }
+            persistState()
+            await notifyFileProviderCatalogChanged()
             logger.info("Registered File Provider domain \(registration.identifier, privacy: .public) on \(selectedVolumeURL.path, privacy: .public)")
         } catch {
             statusMessage = Self.describe(error)
@@ -102,6 +104,7 @@ final class HelperAppState {
             items = loadedItems
             conflicts = try await api.listConflicts()
             persistState()
+            await notifyFileProviderCatalogChanged()
             statusMessage = "Loaded \(projects.count) project roots and \(conflicts.count) open conflicts."
         } catch {
             statusMessage = error.localizedDescription
@@ -113,6 +116,11 @@ final class HelperAppState {
             return
         }
         await registerFileProviderDomain()
+    }
+
+    func refreshFileProviderFromLocalState() async {
+        persistState()
+        await notifyFileProviderCatalogChanged()
     }
 
     private func loadPersistedState() {
@@ -151,12 +159,12 @@ final class HelperAppState {
 
     private func persistState() {
         let snapshot = HelperSnapshot(
-                serverURL: serverURL,
-                helperID: helperID,
-                selectedVolumePath: selectedVolumeURL?.path,
-                selectedVolumeBookmark: selectedVolumeBookmark,
-                volumeUUID: volumeCheck?.volumeUUID,
-                fileProviderDomainIdentifier: domainIdentifier.isEmpty ? nil : domainIdentifier,
+            serverURL: serverURL,
+            helperID: helperID,
+            selectedVolumePath: selectedVolumeURL?.path,
+            selectedVolumeBookmark: selectedVolumeBookmark,
+            volumeUUID: volumeCheck?.volumeUUID,
+            fileProviderDomainIdentifier: domainIdentifier.isEmpty ? nil : domainIdentifier,
             projects: projects,
             items: items,
             conflicts: conflicts,
@@ -181,8 +189,93 @@ final class HelperAppState {
             }
         }
 
+        do {
+            try writeFileProviderStateSnapshot(snapshot)
+        } catch {
+            persistenceErrors.append(error.localizedDescription)
+            logger.error("Could not save File Provider state snapshot: \(Self.describe(error), privacy: .public)")
+        }
+
         if !persistenceErrors.isEmpty {
             statusMessage = "Could not save Roughdash helper state: \(persistenceErrors.joined(separator: "; "))"
+        }
+    }
+
+    private func writeFileProviderStateSnapshot(_ snapshot: HelperSnapshot) throws {
+        guard !domainIdentifier.isEmpty else {
+            return
+        }
+
+        guard #available(macOS 15.0, *) else {
+            return
+        }
+
+        guard let manager = NSFileProviderManager(for: fileProviderDomain()) else {
+            logger.error("Could not create File Provider manager for state snapshot domain \(self.domainIdentifier, privacy: .public)")
+            return
+        }
+
+        let stateDirectoryURL = try manager.stateDirectoryURL()
+        let didAccessStateDirectory = stateDirectoryURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccessStateDirectory {
+                stateDirectoryURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let storage = HelperStorage(fileProviderStateDirectoryURL: stateDirectoryURL)
+        try storage.writeSnapshot(snapshot)
+        logger.info("Saved File Provider state snapshot to \(stateDirectoryURL.path, privacy: .public)")
+    }
+
+    private func notifyFileProviderCatalogChanged() async {
+        guard !domainIdentifier.isEmpty else {
+            return
+        }
+
+        do {
+            let domain = fileProviderDomain()
+            guard let manager = NSFileProviderManager(for: domain) else {
+                logger.error("Could not create File Provider manager for domain \(self.domainIdentifier, privacy: .public)")
+                return
+            }
+
+            try await signalEnumerator(manager)
+            try await reimportRoot(manager)
+            logger.info("Requested File Provider refresh for domain \(self.domainIdentifier, privacy: .public)")
+        } catch {
+            logger.error("Could not refresh File Provider domain \(self.domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func fileProviderDomain() -> NSFileProviderDomain {
+        NSFileProviderDomain(
+            identifier: NSFileProviderDomainIdentifier(domainIdentifier),
+            displayName: "Roughdash"
+        )
+    }
+
+    private func signalEnumerator(_ manager: NSFileProviderManager) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            manager.signalEnumerator(for: .workingSet) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private func reimportRoot(_ manager: NSFileProviderManager) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            manager.reimportItems(below: .rootContainer) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
         }
     }
 

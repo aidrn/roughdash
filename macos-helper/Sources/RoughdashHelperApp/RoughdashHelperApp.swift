@@ -10,6 +10,7 @@ struct RoughdashHelperApp: App {
         _state = State(initialValue: appState)
         Task { @MainActor in
             await appState.handleLaunchArguments()
+            await appState.refreshFileProviderFromLocalState()
         }
     }
 
@@ -19,6 +20,7 @@ struct RoughdashHelperApp: App {
                 .frame(minWidth: 900, minHeight: 560)
                 .task {
                     await state.handleLaunchArguments()
+                    await state.refreshFileProviderFromLocalState()
                 }
         }
         .commands {

@@ -57,6 +57,7 @@ public enum HelperStorageError: Error, LocalizedError {
 public struct HelperStorage {
     public let appGroupIdentifier: String
     public let containerURL: URL
+    private let storageLocation: StorageLocation
 
     public init(appGroupIdentifier: String? = nil, bundle: Bundle = .main) throws {
         guard let identifier = appGroupIdentifier ?? Self.appGroupIdentifier(in: bundle), !identifier.isEmpty else {
@@ -67,6 +68,13 @@ public struct HelperStorage {
         }
         self.appGroupIdentifier = identifier
         self.containerURL = container
+        self.storageLocation = .appGroup
+    }
+
+    public init(fileProviderStateDirectoryURL: URL) {
+        self.appGroupIdentifier = ""
+        self.containerURL = fileProviderStateDirectoryURL
+        self.storageLocation = .fileProviderStateDirectory
     }
 
     public static func appGroupIdentifier(in bundle: Bundle = .main) -> String? {
@@ -75,17 +83,28 @@ public struct HelperStorage {
 
     public func readSnapshot() throws -> HelperSnapshot? {
         let url = snapshotURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        if FileManager.default.fileExists(atPath: url.path) {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder.roughdash.decode(HelperSnapshot.self, from: data)
+        }
+
+        guard let legacySnapshotURL, FileManager.default.fileExists(atPath: legacySnapshotURL.path) else {
             return nil
         }
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder.roughdash.decode(HelperSnapshot.self, from: data)
+
+        let data = try Data(contentsOf: legacySnapshotURL)
+        let snapshot = try JSONDecoder.roughdash.decode(HelperSnapshot.self, from: data)
+        try? writeSnapshot(snapshot)
+        return snapshot
     }
 
     public func writeSnapshot(_ snapshot: HelperSnapshot) throws {
         try ensureRoughdashDirectory()
         let data = try JSONEncoder.roughdash.encode(snapshot)
         try data.write(to: snapshotURL, options: .atomic)
+        if storageLocation == .appGroup {
+            try? writeLegacySnapshot(data)
+        }
     }
 
     public func writeVolumeMetadata(_ snapshot: HelperSnapshot, toVolumeAt volumeURL: URL) throws {
@@ -99,7 +118,20 @@ public struct HelperStorage {
         try data.write(to: metadataDirectory.appendingPathComponent("helper-state.json"), options: .atomic)
     }
 
+    private var fileProviderStorageDirectory: URL {
+        containerURL.appendingPathComponent("File Provider Storage", isDirectory: true)
+    }
+
     private var roughdashDirectory: URL {
+        switch storageLocation {
+        case .appGroup:
+            fileProviderStorageDirectory.appendingPathComponent("Roughdash", isDirectory: true)
+        case .fileProviderStateDirectory:
+            containerURL.appendingPathComponent("Roughdash", isDirectory: true)
+        }
+    }
+
+    private var legacyRoughdashDirectory: URL {
         containerURL.appendingPathComponent("Roughdash", isDirectory: true)
     }
 
@@ -107,9 +139,31 @@ public struct HelperStorage {
         roughdashDirectory.appendingPathComponent("state.json")
     }
 
+    private var legacySnapshotURL: URL? {
+        switch storageLocation {
+        case .appGroup:
+            legacyRoughdashDirectory.appendingPathComponent("state.json")
+        case .fileProviderStateDirectory:
+            nil
+        }
+    }
+
     private func ensureRoughdashDirectory() throws {
         try FileManager.default.createDirectory(at: roughdashDirectory, withIntermediateDirectories: true)
     }
+
+    private func writeLegacySnapshot(_ data: Data) throws {
+        guard let legacySnapshotURL else {
+            return
+        }
+        try FileManager.default.createDirectory(at: legacyRoughdashDirectory, withIntermediateDirectories: true)
+        try data.write(to: legacySnapshotURL, options: .atomic)
+    }
+}
+
+private enum StorageLocation: Equatable, Sendable {
+    case appGroup
+    case fileProviderStateDirectory
 }
 
 private extension JSONEncoder {

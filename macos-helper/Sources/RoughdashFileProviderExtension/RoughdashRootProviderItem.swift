@@ -21,3 +21,17 @@ final class RoughdashRootProviderItem: NSObject, NSFileProviderItem {
     }
     var capabilities: NSFileProviderItemCapabilities { [.allowsReading] }
 }
+
+final class RoughdashTrashProviderItem: NSObject, NSFileProviderItem {
+    var itemIdentifier: NSFileProviderItemIdentifier { .trashContainer }
+    var parentItemIdentifier: NSFileProviderItemIdentifier { .rootContainer }
+    var filename: String { ".Trash" }
+    var contentType: UTType { .folder }
+    var itemVersion: NSFileProviderItemVersion {
+        NSFileProviderItemVersion(
+            contentVersion: Data("roughdash-trash-v1".utf8),
+            metadataVersion: Data("roughdash-trash-v1".utf8)
+        )
+    }
+    var capabilities: NSFileProviderItemCapabilities { [.allowsReading] }
+}
