@@ -176,6 +176,11 @@ public struct CompletedTransfer: Sendable {
     public var revision: SyncRevision
 }
 
+public struct SyncDirectoryResult: Sendable {
+    public var item: SyncItem
+    public var revision: SyncRevision?
+}
+
 public struct SyncProjectScanResult: Codable, Sendable {
     public var items: [SyncItem]
     public var created: Int

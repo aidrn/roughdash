@@ -17,12 +17,15 @@ public struct RegisteredFileProviderDomain: Sendable {
 
 public enum FileProviderDomainRegistrarError: Error, LocalizedError {
     case externalVolumeDomainsRequireMacOS15
+    case externalVolumeDomainUnsupported(String)
     case volumeIneligible(String)
 
     public var errorDescription: String? {
         switch self {
         case .externalVolumeDomainsRequireMacOS15:
             return "File Provider domains on external volumes require macOS 15 or newer."
+        case .externalVolumeDomainUnsupported(let reason):
+            return "macOS rejected the Roughdash SSD-backed File Provider domain: \(reason)"
         case .volumeIneligible(let reason):
             return "The selected volume is not eligible for File Provider domains: \(reason)."
         }
@@ -71,10 +74,10 @@ public struct FileProviderDomainRegistrar: Sendable {
                 isExternalVolumeDomain: true
             )
         } catch {
-            guard Self.isFeatureUnsupported(error) else {
-                throw error
+            if Self.isFeatureUnsupported(error) {
+                throw FileProviderDomainRegistrarError.externalVolumeDomainUnsupported("NSFeatureUnsupportedError. Roughdash will not fall back to standard CloudStorage because the sync domain must live on the selected SSD.")
             }
-            return try await registerStandardDomain(volumeUUID: volumeUUID, serverURL: serverURL, helperID: helperID)
+            throw error
         }
     }
 
@@ -118,6 +121,9 @@ public struct FileProviderDomainRegistrar: Sendable {
                     guard domain.displayName == displayName else {
                         return false
                     }
+                    guard domain.volumeUUID != nil else {
+                        return false
+                    }
                     if let userInfoVolumeUUID = domain.userInfo?["volumeUUID"] as? String {
                         return userInfoVolumeUUID == volumeUUID
                     }
@@ -134,28 +140,6 @@ public struct FileProviderDomainRegistrar: Sendable {
                 })
             }
         }
-    }
-
-    @available(macOS 15.0, *)
-    private func registerStandardDomain(volumeUUID: String, serverURL: String, helperID: String) async throws -> RegisteredFileProviderDomain {
-        let identifier = NSFileProviderDomainIdentifier("roughdash-\(volumeUUID.lowercased())")
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: displayName)
-        domain.supportsSyncingTrash = true
-        domain.userInfo = [
-            "roughdash": "true",
-            "volumeUUID": volumeUUID,
-            "serverURL": serverURL,
-            "helperID": helperID,
-            "fallback": "standard-domain"
-        ]
-
-        try await add(domain)
-        return RegisteredFileProviderDomain(
-            identifier: domain.identifier.rawValue,
-            displayName: domain.displayName,
-            volumeUUID: volumeUUID,
-            isExternalVolumeDomain: false
-        )
     }
 
     @available(macOS 15.0, *)

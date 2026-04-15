@@ -50,6 +50,25 @@ public actor RoughdashAPIClient {
         try await request("POST", "/api/sync/projects/\(projectID)/scan")
     }
 
+    public func createDirectory(
+        projectID: String,
+        deviceID: String,
+        parentID: String,
+        relativePath: String,
+        baseRevision: Int64 = 0
+    ) async throws -> SyncDirectoryResult {
+        let body = SyncDirectoryRequest(
+            deviceId: deviceID,
+            parentId: parentID,
+            relativePath: relativePath,
+            name: URL(fileURLWithPath: relativePath).lastPathComponent,
+            kind: "directory",
+            baseRevision: baseRevision
+        )
+        let response: ItemUpsertResponse = try await request("PUT", "/api/sync/projects/\(projectID)/items", body: body)
+        return SyncDirectoryResult(item: response.item, revision: response.revision)
+    }
+
     public func downloadItemContent(projectID: String, itemID: String) async throws -> DownloadedSyncItemContent {
         let request = try urlRequest("GET", "/api/sync/projects/\(projectID)/items/\(itemID)/content")
         let (body, response) = try await session.data(for: request)
@@ -158,6 +177,15 @@ private struct DevicesResponse: Decodable { var devices: [SyncDevice]? }
 private struct LeaseRequest: Encodable { var ssdVolumeUuid: String; var ttlSeconds: Int; var force: Bool }
 private struct LeaseResponse: Decodable { var lease: SyncLease }
 private struct ItemsResponse: Decodable { var items: [SyncItem] }
+private struct ItemUpsertResponse: Decodable { var item: SyncItem; var revision: SyncRevision? }
+private struct SyncDirectoryRequest: Encodable {
+    var deviceId: String
+    var parentId: String
+    var relativePath: String
+    var name: String
+    var kind: String
+    var baseRevision: Int64
+}
 private struct PinResponse: Decodable { var pin: SyncPin }
 private struct ConflictsResponse: Decodable { var conflicts: [SyncConflict] }
 private struct TransferResponse: Decodable { var transfer: TransferSession }

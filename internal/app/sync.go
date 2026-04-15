@@ -34,8 +34,10 @@ type syncActor struct {
 }
 
 var (
-	errSyncForbidden    = errors.New("sync actor is not allowed to use this device")
-	errSyncLeaseMissing = errors.New("active sync lease is required")
+	errSyncForbidden         = errors.New("sync actor is not allowed to use this device")
+	errSyncLeaseMissing      = errors.New("active sync lease is required")
+	errSyncRevisionConflict  = errors.New("sync base revision does not match current NAS revision")
+	errSyncItemAlreadyExists = errors.New("sync item already exists")
 )
 
 func (s *Server) syncAccessRequired(next http.HandlerFunc) http.HandlerFunc {
@@ -173,27 +175,52 @@ func (s *Server) handleSyncItemsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSyncItemUpsert(w http.ResponseWriter, r *http.Request) {
-	if !syncActorIsUser(r) {
-		writeError(w, http.StatusForbidden, errors.New("user session required"))
-		return
-	}
 	projectID := r.PathValue("id")
-	if _, err := s.store.GetSyncProject(r.Context(), projectID); err != nil {
+	project, err := s.store.GetSyncProject(r.Context(), projectID)
+	if err != nil {
 		writeError(w, statusForStoreError(err), err)
 		return
 	}
-	var item models.SyncItem
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+	var request struct {
+		ID           string     `json:"id"`
+		DeviceID     string     `json:"deviceId"`
+		ParentID     string     `json:"parentId"`
+		RelativePath string     `json:"relativePath"`
+		Name         string     `json:"name"`
+		Kind         string     `json:"kind"`
+		Size         int64      `json:"size"`
+		ModTime      *time.Time `json:"modTime,omitempty"`
+		ContentHash  string     `json:"contentHash"`
+		MetadataHash string     `json:"metadataHash"`
+		BaseRevision int64      `json:"baseRevision"`
+		Revision     int64      `json:"revision"`
+		Tombstoned   bool       `json:"tombstoned"`
+		Dirty        bool       `json:"dirty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	relativePath, err := normalizeSyncRelativePath(item.RelativePath)
+	relativePath, err := normalizeSyncRelativePath(request.RelativePath)
 	if err != nil || relativePath == "" {
 		writeError(w, http.StatusBadRequest, errors.New("valid relativePath is required"))
 		return
 	}
-	item.ProjectID = projectID
-	item.RelativePath = relativePath
+	item := models.SyncItem{
+		ID:           strings.TrimSpace(request.ID),
+		ProjectID:    projectID,
+		ParentID:     strings.TrimSpace(request.ParentID),
+		RelativePath: relativePath,
+		Name:         strings.TrimSpace(request.Name),
+		Kind:         strings.TrimSpace(request.Kind),
+		Size:         request.Size,
+		ModTime:      request.ModTime,
+		ContentHash:  strings.TrimSpace(request.ContentHash),
+		MetadataHash: strings.TrimSpace(request.MetadataHash),
+		Revision:     request.Revision,
+		Tombstoned:   request.Tombstoned,
+		Dirty:        request.Dirty,
+	}
 	if item.Name == "" {
 		item.Name = path.Base(relativePath)
 	}
@@ -211,6 +238,44 @@ func (s *Server) handleSyncItemUpsert(w http.ResponseWriter, r *http.Request) {
 		item.Size = 0
 	} else if item.Size < 0 {
 		writeError(w, http.StatusBadRequest, errors.New("size must be non-negative"))
+		return
+	}
+	if actor, ok := currentSyncActor(r); ok && actor.Kind == "helper" {
+		if !project.Enabled {
+			writeError(w, http.StatusBadRequest, errors.New("sync project is disabled"))
+			return
+		}
+		if item.Kind != models.SyncItemKindDirectory {
+			writeError(w, http.StatusBadRequest, errors.New("helper item upsert currently supports directories only"))
+			return
+		}
+		device, err := s.store.GetSyncDevice(r.Context(), strings.TrimSpace(request.DeviceID))
+		if err != nil {
+			writeError(w, statusForStoreError(err), err)
+			return
+		}
+		if err := s.ensureActorCanUseDevice(r, device); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+		if _, err := s.requireActiveSyncLease(r.Context(), device); err != nil {
+			writeError(w, statusForSyncLeaseError(err), err)
+			return
+		}
+		saved, revision, err := s.createSyncDirectory(r.Context(), project, device.ID, item, request.BaseRevision)
+		if err != nil {
+			if errors.Is(err, errSyncRevisionConflict) || errors.Is(err, errSyncItemAlreadyExists) {
+				writeError(w, http.StatusConflict, err)
+				return
+			}
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"item": saved, "revision": revision})
+		return
+	}
+	if !syncActorIsUser(r) {
+		writeError(w, http.StatusForbidden, errors.New("user session required"))
 		return
 	}
 	saved, err := s.store.UpsertSyncItem(r.Context(), item)
@@ -237,6 +302,100 @@ func (s *Server) handleSyncProjectScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) createSyncDirectory(ctx context.Context, project *models.SyncProject, deviceID string, item models.SyncItem, baseRevision int64) (*models.SyncItem, *models.SyncRevision, error) {
+	if baseRevision < 0 {
+		return nil, nil, errors.New("baseRevision must be non-negative")
+	}
+	parentID := "root"
+	if parentPath := path.Dir(item.RelativePath); parentPath != "." {
+		parent, err := s.store.GetSyncItemByProjectPath(ctx, project.ID, parentPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parent directory is not cataloged: %w", err)
+		}
+		if parent.Tombstoned || parent.Kind != models.SyncItemKindDirectory {
+			return nil, nil, errors.New("parent path is not an active directory")
+		}
+		parentID = parent.ID
+	}
+
+	var existing *models.SyncItem
+	if found, err := s.store.GetSyncItemByProjectPath(ctx, project.ID, item.RelativePath); err == nil {
+		existing = found
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return nil, nil, err
+	}
+
+	if existing != nil && !existing.Tombstoned {
+		if baseRevision == 0 {
+			return nil, nil, errSyncItemAlreadyExists
+		}
+		if baseRevision != existing.Revision {
+			if _, err := s.createSyncConflict(ctx, existing, baseRevision, existing.Revision, baseRevision+1); err != nil {
+				return nil, nil, err
+			}
+			return nil, nil, errSyncRevisionConflict
+		}
+		return existing, nil, nil
+	}
+	if existing == nil && baseRevision != 0 {
+		return nil, nil, errSyncRevisionConflict
+	}
+
+	destination, err := syncDestinationPath(project.RootPath, item.RelativePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info, err := os.Stat(destination); err == nil && !info.IsDir() {
+		return nil, nil, errors.New("destination exists and is not a directory")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return nil, nil, err
+	}
+
+	revisionBase := baseRevision
+	if existing != nil {
+		item.ID = existing.ID
+		item.Revision = existing.Revision + 1
+		revisionBase = existing.Revision
+	} else {
+		item.Revision = 1
+	}
+	now := time.Now().UTC()
+	item.ProjectID = project.ID
+	item.ParentID = parentID
+	item.Name = path.Base(item.RelativePath)
+	item.Kind = models.SyncItemKindDirectory
+	item.Size = 0
+	item.ModTime = &now
+	item.ContentHash = "directory"
+	item.MetadataHash = "directory"
+	item.Tombstoned = false
+	item.Dirty = false
+
+	saved, err := s.store.UpsertSyncItem(ctx, item)
+	if err != nil {
+		return nil, nil, err
+	}
+	revision, err := s.store.AppendSyncRevision(ctx, models.SyncRevision{
+		ProjectID:    saved.ProjectID,
+		ItemID:       saved.ID,
+		DeviceID:     deviceID,
+		BaseRevision: revisionBase,
+		Revision:     saved.Revision,
+		Operation:    models.SyncRevisionOperationMetadata,
+		ContentHash:  saved.ContentHash,
+		MetadataHash: saved.MetadataHash,
+		Details:      syncRevisionDetails(saved.RelativePath, saved.Size),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = s.store.RecordAudit(ctx, "sync.directory.created", "sync", saved.ID, map[string]any{"projectId": saved.ProjectID, "relativePath": saved.RelativePath})
+	return saved, revision, nil
 }
 
 func (s *Server) handleSyncItemContent(w http.ResponseWriter, r *http.Request) {

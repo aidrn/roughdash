@@ -6,6 +6,12 @@ public struct SyncUploadResult: Sendable {
     public var completed: CompletedTransfer
 }
 
+public struct SyncDirectoryCreateResult: Sendable {
+    public var device: SyncDevice
+    public var lease: SyncLease
+    public var directory: SyncDirectoryResult
+}
+
 public actor SyncUploadCoordinator {
     private let api: RoughdashAPIClient
     private let transferClient: TransferClient
@@ -80,6 +86,40 @@ public actor SyncUploadCoordinator {
             fileURL: fileURL
         )
         return SyncUploadResult(device: device, lease: lease, completed: completed)
+    }
+
+    public func createDirectory(
+        snapshot: HelperSnapshot,
+        projectID: String,
+        parentID: String,
+        relativePath: String,
+        forceLease: Bool = false
+    ) async throws -> SyncDirectoryCreateResult {
+        guard let volumeUUID = snapshot.volumeUUID, !volumeUUID.isEmpty else {
+            throw SyncUploadError.missingVolumeUUID
+        }
+        let name = relativePath.split(separator: "/").last.map(String.init) ?? relativePath
+        guard !name.isEmpty else {
+            throw SyncUploadError.unsupportedItem
+        }
+
+        let device = try await ensureDevice(snapshot: snapshot, volumeUUID: volumeUUID)
+        guard let deviceID = device.id else {
+            throw APIError.invalidResponse
+        }
+        let siblings = try await api.listItems(projectID: projectID, parentID: parentID)
+        if siblings.contains(where: { $0.relativePath == relativePath && !$0.tombstoned }) {
+            throw SyncUploadError.itemAlreadyExists
+        }
+        let lease = try await api.acquireLease(deviceID: deviceID, volumeUUID: volumeUUID, force: forceLease)
+        let directory = try await api.createDirectory(
+            projectID: projectID,
+            deviceID: deviceID,
+            parentID: parentID,
+            relativePath: relativePath,
+            baseRevision: 0
+        )
+        return SyncDirectoryCreateResult(device: device, lease: lease, directory: directory)
     }
 
     private func ensureDevice(snapshot: HelperSnapshot, volumeUUID: String) async throws -> SyncDevice {

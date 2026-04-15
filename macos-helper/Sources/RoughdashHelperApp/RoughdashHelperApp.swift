@@ -11,6 +11,7 @@ struct RoughdashHelperApp: App {
         Task { @MainActor in
             await appState.handleLaunchArguments()
             await appState.refreshFileProviderFromLocalState()
+            appState.startAutoRefresh()
         }
     }
 
@@ -21,6 +22,7 @@ struct RoughdashHelperApp: App {
                 .task {
                     await state.handleLaunchArguments()
                     await state.refreshFileProviderFromLocalState()
+                    state.startAutoRefresh()
                 }
         }
         .commands {

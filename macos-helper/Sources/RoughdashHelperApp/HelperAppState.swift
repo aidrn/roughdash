@@ -11,6 +11,7 @@ final class HelperAppState {
     private var selectedVolumeBookmark: Data?
     private var selectedVolumeSecurityScopeActive = false
     private var launchArgumentsHandled = false
+    private var autoRefreshTask: Task<Void, Never>?
 
     var serverURL = "http://localhost:8420"
     var helperID = ""
@@ -145,6 +146,18 @@ final class HelperAppState {
         await notifyFileProviderCatalogChanged()
     }
 
+    func startAutoRefresh() {
+        guard autoRefreshTask == nil else {
+            return
+        }
+        autoRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15 * 1_000_000_000)
+                await self?.autoRefreshOnce()
+            }
+        }
+    }
+
     private func loadPersistedState() {
         guard let snapshot = try? HelperStorage().readSnapshot() else {
             return
@@ -244,6 +257,25 @@ final class HelperAppState {
         conflicts = try await api.listConflicts()
         if let volumeUUID = volumeCheck?.volumeUUID {
             syncDevice = try await api.listDevices().first(where: { $0.ssdVolumeUuid == volumeUUID })
+        }
+    }
+
+    private func autoRefreshOnce() async {
+        guard !serverURL.isEmpty,
+              !helperID.isEmpty,
+              !helperToken.isEmpty,
+              !domainIdentifier.isEmpty,
+              !isBusy else {
+            return
+        }
+
+        do {
+            try await refreshCatalogFromServer()
+            persistState()
+            await notifyFileProviderCatalogChanged()
+            statusMessage = "Auto-updated \(projects.count) project roots, \(items.filter { !$0.tombstoned }.count) items, and \(visibleConflicts.count) open conflicts."
+        } catch {
+            logger.error("Auto refresh failed: \(Self.describe(error), privacy: .public)")
         }
     }
 

@@ -221,6 +221,62 @@ func TestSyncTransferRequiresLeaseAndCatalogsCompletedUpload(t *testing.T) {
 	}
 }
 
+func TestSyncHelperCanCreateDirectoryWithLease(t *testing.T) {
+	server := newSyncTestServer(t)
+	handler := server.Handler()
+	ctx := context.Background()
+
+	helper, token := createSyncTestHelper(t, server, "directory-helper")
+	project, _ := createSyncTestProjectAndItem(t, server)
+	device, err := server.store.CreateSyncDevice(ctx, models.SyncDevice{
+		HelperID:      helper.ID,
+		MachineID:     "directory-mac",
+		Name:          "Directory Mac",
+		Platform:      "darwin",
+		SSDVolumeUUID: "directory-volume",
+	})
+	if err != nil {
+		t.Fatalf("create device: %v", err)
+	}
+
+	response := doSyncJSON(t, handler, http.MethodPut, "/api/sync/projects/"+project.ID+"/items", map[string]any{
+		"deviceId":     device.ID,
+		"relativePath": "CloudFolder",
+		"kind":         models.SyncItemKindDirectory,
+		"baseRevision": float64(0),
+	}, helper.ID, token)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected directory create without lease to conflict, got %d: %s", response.Code, response.Body.String())
+	}
+
+	if _, err := server.store.AcquireSyncLease(ctx, device.ID, device.SSDVolumeUUID, time.Minute, false); err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	response = doSyncJSON(t, handler, http.MethodPut, "/api/sync/projects/"+project.ID+"/items", map[string]any{
+		"deviceId":     device.ID,
+		"relativePath": "CloudFolder",
+		"kind":         models.SyncItemKindDirectory,
+		"baseRevision": float64(0),
+	}, helper.ID, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create directory with lease: got %d: %s", response.Code, response.Body.String())
+	}
+	var created struct {
+		Item     models.SyncItem     `json:"item"`
+		Revision models.SyncRevision `json:"revision"`
+	}
+	decodeSyncResponse(t, response, &created)
+	if created.Item.Kind != models.SyncItemKindDirectory || created.Item.RelativePath != "CloudFolder" || created.Item.Revision != 1 {
+		t.Fatalf("unexpected directory item: %#v", created.Item)
+	}
+	if created.Revision.Operation != models.SyncRevisionOperationMetadata || created.Revision.DeviceID != device.ID {
+		t.Fatalf("unexpected directory revision: %#v", created.Revision)
+	}
+	if info, err := os.Stat(filepath.Join(project.RootPath, "CloudFolder")); err != nil || !info.IsDir() {
+		t.Fatalf("expected directory on NAS, info=%#v err=%v", info, err)
+	}
+}
+
 func TestSyncTransferCreatesConflictForStaleBaseRevision(t *testing.T) {
 	server := newSyncTestServer(t)
 	handler := server.Handler()

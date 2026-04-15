@@ -77,6 +77,7 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
 
                 logger.info("Hydrated File Provider item \(item.id, privacy: .public) to \(fileURL.path, privacy: .public)")
                 fetch.complete(fileURL, RoughdashProviderItem(item: item), nil)
+                await signalWorkingSetChanged()
             } catch {
                 logger.error("Could not hydrate File Provider item \(itemID, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 fetch.complete(nil, nil, error)
@@ -98,18 +99,11 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         let creation = FileProviderItemModification(progress: progress, completionHandler: completionHandler)
         let filename = itemTemplate.filename
         let parentIdentifier = itemTemplate.parentItemIdentifier
+        let createsDirectory = Self.isDirectoryCreate(itemTemplate: itemTemplate, contents: url)
 
         Task {
             do {
                 var snapshot = RoughdashExtensionStorage.readSnapshot(for: domain)
-                guard let contentURL = url else {
-                    throw NSFileProviderError(.cannotSynchronize)
-                }
-                var isDirectory = ObjCBool(false)
-                guard FileManager.default.fileExists(atPath: contentURL.path, isDirectory: &isDirectory),
-                      !isDirectory.boolValue else {
-                    throw NSFileProviderError(.cannotSynchronize)
-                }
                 guard let serverURL = URL(string: snapshot.serverURL),
                       !snapshot.helperID.isEmpty,
                       let helperToken = snapshot.helperToken,
@@ -122,6 +116,34 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                     filename: filename,
                     snapshot: snapshot
                 )
+                let api = RoughdashAPIClient(baseURL: serverURL, helperID: snapshot.helperID, helperToken: helperToken)
+
+                if createsDirectory {
+                    let created = try await SyncUploadCoordinator(api: api).createDirectory(
+                        snapshot: snapshot,
+                        projectID: parent.projectID,
+                        parentID: parent.parentID,
+                        relativePath: parent.relativePath
+                    )
+                    snapshot.syncDevice = created.device
+                    Self.upsert(created.directory.item, in: &snapshot.items)
+                    snapshot.updatedAt = Date()
+                    try RoughdashExtensionStorage.writeSnapshot(snapshot, for: domain)
+                    await signalWorkingSetChanged()
+
+                    logger.info("Created File Provider directory \(created.directory.item.id, privacy: .public) at \(created.directory.item.relativePath, privacy: .public)")
+                    creation.complete(RoughdashProviderItem(item: created.directory.item), [], false, nil)
+                    return
+                }
+
+                guard let contentURL = url else {
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
+                var isDirectory = ObjCBool(false)
+                guard FileManager.default.fileExists(atPath: contentURL.path, isDirectory: &isDirectory),
+                      !isDirectory.boolValue else {
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
                 let didAccess = contentURL.startAccessingSecurityScopedResource()
                 defer {
                     if didAccess {
@@ -129,7 +151,6 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                     }
                 }
 
-                let api = RoughdashAPIClient(baseURL: serverURL, helperID: snapshot.helperID, helperToken: helperToken)
                 let upload = try await SyncUploadCoordinator(api: api).uploadNewFile(
                     snapshot: snapshot,
                     projectID: parent.projectID,
@@ -138,7 +159,7 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                     fileURL: contentURL
                 )
                 snapshot.syncDevice = upload.device
-                snapshot.items.append(upload.completed.item)
+                Self.upsert(upload.completed.item, in: &snapshot.items)
                 snapshot.updatedAt = Date()
                 try RoughdashExtensionStorage.writeSnapshot(snapshot, for: domain)
                 await signalWorkingSetChanged()
@@ -200,11 +221,7 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                     baseContentHash: baseContentHash
                 )
                 snapshot.syncDevice = upload.device
-                if let index = snapshot.items.firstIndex(where: { $0.id == upload.completed.item.id }) {
-                    snapshot.items[index] = upload.completed.item
-                } else {
-                    snapshot.items.append(upload.completed.item)
-                }
+                Self.upsert(upload.completed.item, in: &snapshot.items)
                 snapshot.updatedAt = Date()
                 try RoughdashExtensionStorage.writeSnapshot(snapshot, for: domain)
                 await signalWorkingSetChanged()
@@ -236,6 +253,25 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         RoughdashEnumerator(containerIdentifier: containerItemIdentifier, domain: domain, catalog: catalog)
+    }
+
+    private static func isDirectoryCreate(itemTemplate: NSFileProviderItem, contents url: URL?) -> Bool {
+        if itemTemplate.contentType == .folder {
+            return true
+        }
+        guard let url else {
+            return false
+        }
+        var isDirectory = ObjCBool(false)
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func upsert(_ item: SyncItem, in items: inout [SyncItem]) {
+        if let index = items.firstIndex(where: { $0.id == item.id || $0.relativePath == item.relativePath }) {
+            items[index] = item
+        } else {
+            items.append(item)
+        }
     }
 
     private func writeTemporaryContent(_ data: Data, for item: SyncItem) throws -> URL {
