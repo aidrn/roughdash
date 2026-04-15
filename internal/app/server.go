@@ -241,7 +241,17 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if request.BootstrapSecret != s.cfg.BootstrapSecret {
+	bootstrapSecret := strings.TrimSpace(request.BootstrapSecret)
+	username := strings.TrimSpace(request.Username)
+	if bootstrapSecret == "" {
+		writeError(w, http.StatusBadRequest, errors.New("bootstrap secret is required"))
+		return
+	}
+	if username == "" {
+		writeError(w, http.StatusBadRequest, errors.New("admin username is required"))
+		return
+	}
+	if bootstrapSecret != s.cfg.BootstrapSecret {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid bootstrap secret"))
 		return
 	}
@@ -255,7 +265,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	user, err := s.store.CreateUser(ctx, strings.TrimSpace(request.Username), hash, "", models.UserRoleAdmin)
+	user, err := s.store.CreateUser(ctx, username, hash, "", models.UserRoleAdmin)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

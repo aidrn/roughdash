@@ -102,6 +102,7 @@ function App() {
         setupRequired={auth.setupRequired}
         onAuthed={refreshStatus}
         onToast={setToast}
+        toast={toast}
       />
     )
   }
@@ -191,10 +192,12 @@ function AuthScreen({
   setupRequired,
   onAuthed,
   onToast,
+  toast,
 }: {
   setupRequired: boolean
   onAuthed: () => Promise<void>
   onToast: (message: string) => void
+  toast: string
 }) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
@@ -207,7 +210,11 @@ function AuthScreen({
     try {
       await api<{ user: User }>('/api/setup', {
         method: 'POST',
-        body: JSON.stringify({ bootstrapSecret, username, password }),
+        body: JSON.stringify({
+          bootstrapSecret: bootstrapSecret.trim(),
+          username: username.trim(),
+          password,
+        }),
       })
       await onAuthed()
       onToast('Setup complete.')
@@ -253,6 +260,7 @@ function AuthScreen({
                 surface.
               </p>
             </div>
+            {toast ? <div className="toast" role="status" aria-live="polite">{toast}</div> : null}
             <div className="auth-grid">
               {setupRequired ? (
                 <section className="panel">
@@ -260,18 +268,18 @@ function AuthScreen({
                   <form className="stack" onSubmit={runSetup}>
                     <label>
                       <span>Bootstrap secret</span>
-                      <input value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} />
+                      <input required value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} />
                     </label>
                     <label>
                       <span>Admin username</span>
-                      <input value={username} onChange={(event) => setUsername(event.target.value)} />
+                      <input required value={username} onChange={(event) => setUsername(event.target.value)} />
                     </label>
                     <label>
-                      <span>Password</span>
-                      <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+                      <span>Password (12+ characters)</span>
+                      <input required minLength={12} type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
                     </label>
                     <button className="primary-button" type="submit" disabled={busy}>
-                      Initialize roughdash
+                      Initialise roughdash
                     </button>
                   </form>
                 </section>
