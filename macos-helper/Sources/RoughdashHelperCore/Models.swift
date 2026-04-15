@@ -82,8 +82,10 @@ public struct TransferSession: Codable, Identifiable, Sendable {
     public var id: String?
     public var direction: String
     public var projectId: String
+    public var deviceId: String
     public var itemId: String?
     public var relativePath: String
+    public var baseRevision: Int64
     public var size: Int64
     public var chunkSize: Int64
     public var sha256: String?
@@ -102,4 +104,11 @@ public struct VolumeCheck: Sendable {
     public var volumeUUID: String
     public var isSupported: Bool
     public var reason: String?
+
+    public init(url: URL, volumeUUID: String, isSupported: Bool, reason: String? = nil) {
+        self.url = url
+        self.volumeUUID = volumeUUID
+        self.isSupported = isSupported
+        self.reason = reason
+    }
 }

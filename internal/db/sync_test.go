@@ -140,6 +140,36 @@ func TestSyncLeaseRequiresForceForActiveOtherDevice(t *testing.T) {
 	}
 }
 
+func TestGetActiveSyncLeaseRequiresMatchingDeviceAndUnexpiredLease(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	device, err := store.CreateSyncDevice(ctx, models.SyncDevice{
+		MachineID:     "mac-1",
+		Name:          "Mac One",
+		Platform:      "darwin",
+		SSDVolumeUUID: "volume-1",
+	})
+	if err != nil {
+		t.Fatalf("create device: %v", err)
+	}
+	if _, err := store.GetActiveSyncLease(ctx, device.ID, device.SSDVolumeUUID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected missing lease before acquire, got %v", err)
+	}
+	if _, err := store.AcquireSyncLease(ctx, device.ID, device.SSDVolumeUUID, time.Minute, false); err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	if _, err := store.GetActiveSyncLease(ctx, device.ID, device.SSDVolumeUUID); err != nil {
+		t.Fatalf("expected active lease: %v", err)
+	}
+	if _, err := store.AcquireSyncLease(ctx, device.ID, device.SSDVolumeUUID, -time.Minute, true); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if _, err := store.GetActiveSyncLease(ctx, device.ID, device.SSDVolumeUUID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected expired lease to be missing, got %v", err)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "roughdash.sqlite"))

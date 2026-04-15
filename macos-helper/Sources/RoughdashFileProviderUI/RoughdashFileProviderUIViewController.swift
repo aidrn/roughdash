@@ -2,7 +2,7 @@ import AppKit
 import FileProviderUI
 import RoughdashHelperCore
 
-final class RoughdashFileProviderUIViewController: NSViewController, FPUIActionExtensionViewController {
+final class RoughdashFileProviderUIViewController: FPUIActionExtensionViewController {
     private let label = NSTextField(labelWithString: "Roughdash needs your attention.")
 
     override func loadView() {
@@ -17,7 +17,7 @@ final class RoughdashFileProviderUIViewController: NSViewController, FPUIActionE
         ])
     }
 
-    func prepare(forAction actionIdentifier: String, itemIdentifiers: [NSFileProviderItemIdentifier]) {
+    override func prepare(forAction actionIdentifier: String, itemIdentifiers: [NSFileProviderItemIdentifier]) {
         switch actionIdentifier {
         case "com.roughdash.keep-downloaded":
             label.stringValue = "Roughdash will keep the selected item downloaded."

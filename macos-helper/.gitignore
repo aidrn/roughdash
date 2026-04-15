@@ -2,3 +2,6 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+.DS_Store
+RoughdashHelper.xcodeproj/
+Configuration/Local.xcconfig

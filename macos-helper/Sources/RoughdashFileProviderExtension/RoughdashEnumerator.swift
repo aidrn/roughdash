@@ -18,9 +18,25 @@ final class RoughdashEnumerator: NSObject, NSFileProviderEnumerator {
         for observer: NSFileProviderEnumerationObserver,
         startingAt page: NSFileProviderPage
     ) {
-        // The real implementation lists children from the local catalog, refreshing
-        // Roughdash project roots when enumerating the root container.
-        observer.didEnumerate([])
+        let snapshot = (try? HelperStorage().readSnapshot()) ?? HelperSnapshot(serverURL: "", helperID: "")
+        let items: [NSFileProviderItem]
+
+        if containerIdentifier == .rootContainer {
+            items = snapshot.projects
+                .filter(\.enabled)
+                .map { RoughdashProjectProviderItem(project: $0) }
+        } else if let projectID = RoughdashFileProviderIdentifiers.projectID(from: containerIdentifier) {
+            items = snapshot.items
+                .filter { $0.projectId == projectID && $0.parentId == "root" && !$0.tombstoned }
+                .map { RoughdashProviderItem(item: $0) }
+        } else {
+            let parentID = containerIdentifier.rawValue
+            items = snapshot.items
+                .filter { $0.parentId == parentID && !$0.tombstoned }
+                .map { RoughdashProviderItem(item: $0) }
+        }
+
+        observer.didEnumerate(items)
         observer.finishEnumerating(upTo: nil)
     }
 

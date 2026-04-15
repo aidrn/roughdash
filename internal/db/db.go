@@ -1025,6 +1025,23 @@ func (s *Store) AcquireSyncLease(ctx context.Context, deviceID, volumeUUID strin
 	return &lease, nil
 }
 
+func (s *Store) GetActiveSyncLease(ctx context.Context, deviceID, volumeUUID string) (*models.SyncLease, error) {
+	now := time.Now().UTC()
+	var lease models.SyncLease
+	err := s.db.QueryRowContext(ctx, `
+		SELECT ssd_volume_uuid, device_id, token, expires_at, updated_at
+		FROM sync_device_leases
+		WHERE ssd_volume_uuid = ? AND device_id = ? AND expires_at > ?;
+	`, volumeUUID, deviceID, now).Scan(&lease.SSDVolumeUUID, &lease.DeviceID, &lease.Token, &lease.ExpiresAt, &lease.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &lease, nil
+}
+
 func (s *Store) UpsertSyncItem(ctx context.Context, item models.SyncItem) (*models.SyncItem, error) {
 	now := time.Now().UTC()
 	if item.ID == "" {
@@ -1266,6 +1283,24 @@ func (s *Store) UpsertSyncPin(ctx context.Context, pin models.SyncPin) (*models.
 			return &row, nil
 		}
 	}
+	return &pin, nil
+}
+
+func (s *Store) GetSyncPin(ctx context.Context, pinID string) (*models.SyncPin, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, project_id, item_id, device_id, mode, recursive, created_at
+		FROM sync_pins
+		WHERE id = ?;
+	`, pinID)
+	var pin models.SyncPin
+	var recursive int
+	if err := row.Scan(&pin.ID, &pin.ProjectID, &pin.ItemID, &pin.DeviceID, &pin.Mode, &recursive, &pin.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	pin.Recursive = intToBool(recursive)
 	return &pin, nil
 }
 

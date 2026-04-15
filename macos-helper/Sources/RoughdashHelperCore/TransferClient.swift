@@ -8,7 +8,7 @@ public actor TransferClient {
         self.api = api
     }
 
-    public func uploadFile(projectID: String, itemID: String?, relativePath: String, fileURL: URL) async throws -> TransferSession {
+    public func uploadFile(projectID: String, deviceID: String, itemID: String?, relativePath: String, baseRevision: Int64, fileURL: URL) async throws -> TransferSession {
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let digest = try SHA256.hash(data: Data(contentsOf: fileURL)).map { String(format: "%02x", $0) }.joined()
@@ -16,8 +16,10 @@ public actor TransferClient {
             id: nil,
             direction: "upload",
             projectId: projectID,
+            deviceId: deviceID,
             itemId: itemID,
             relativePath: relativePath,
+            baseRevision: baseRevision,
             size: size,
             chunkSize: 8 * 1024 * 1024,
             sha256: digest,

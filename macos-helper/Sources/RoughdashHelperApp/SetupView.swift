@@ -26,6 +26,15 @@ struct SetupView: View {
                     )
                     .foregroundStyle(check.isSupported ? .green : .red)
                 }
+                Button("Register File Provider Domain") {
+                    Task { await state.registerFileProviderDomain() }
+                }
+                .disabled(state.volumeCheck?.isSupported != true || state.isBusy)
+                if !state.domainIdentifier.isEmpty {
+                    Text("Domain: \(state.domainIdentifier)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Status") {

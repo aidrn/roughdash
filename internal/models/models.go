@@ -29,6 +29,15 @@ const (
 
 	SyncConflictStatusOpen     = "open"
 	SyncConflictStatusResolved = "resolved"
+
+	SyncConnectionModeLANDirect       = "LAN direct"
+	SyncConnectionModeTailscaleDirect = "Tailscale direct"
+	SyncConnectionModePeerRelay       = "peer relay"
+	SyncConnectionModeDERPRelay       = "DERP relay"
+
+	SyncRevisionOperationUpload   = "upload"
+	SyncRevisionOperationDelete   = "delete"
+	SyncRevisionOperationMetadata = "metadata"
 )
 
 type User struct {

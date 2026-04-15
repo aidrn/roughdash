@@ -35,8 +35,10 @@ type Session struct {
 	ID           string    `json:"id"`
 	Direction    string    `json:"direction"`
 	ProjectID    string    `json:"projectId"`
+	DeviceID     string    `json:"deviceId"`
 	ItemID       string    `json:"itemId"`
 	RelativePath string    `json:"relativePath"`
+	BaseRevision int64     `json:"baseRevision"`
 	Size         int64     `json:"size"`
 	ChunkSize    int64     `json:"chunkSize"`
 	SHA256       string    `json:"sha256,omitempty"`
@@ -66,6 +68,9 @@ func NewManager(tempDir string) (*Manager, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
+	if err := cleanupSessionDirs(root); err != nil {
+		return nil, err
+	}
 	return &Manager{root: root, open: make(map[string]*sessionState)}, nil
 }
 
@@ -75,6 +80,9 @@ func (m *Manager) Create(_ context.Context, session Session) (Session, error) {
 	}
 	if session.Direction != DirectionUpload {
 		return Session{}, ErrUnsupportedMode
+	}
+	if session.Size < 0 || session.BaseRevision < 0 {
+		return Session{}, ErrInvalidChunk
 	}
 	if session.ChunkSize <= 0 {
 		session.ChunkSize = DefaultChunkSize
@@ -184,6 +192,7 @@ func (m *Manager) Complete(id, destinationPath string) (Session, error) {
 		return Session{}, err
 	}
 	hash := sha256.New()
+	var total int64
 	for index := int64(0); index < chunkCount; index++ {
 		chunk, err := os.Open(m.chunkPath(id, index))
 		if err != nil {
@@ -191,7 +200,8 @@ func (m *Manager) Complete(id, destinationPath string) (Session, error) {
 			_ = os.Remove(tempPath)
 			return Session{}, ErrIncomplete
 		}
-		_, copyErr := io.Copy(io.MultiWriter(output, hash), chunk)
+		n, copyErr := io.Copy(io.MultiWriter(output, hash), chunk)
+		total += n
 		closeErr := chunk.Close()
 		if copyErr != nil {
 			output.Close()
@@ -203,6 +213,11 @@ func (m *Manager) Complete(id, destinationPath string) (Session, error) {
 			_ = os.Remove(tempPath)
 			return Session{}, closeErr
 		}
+	}
+	if total != state.session.Size {
+		output.Close()
+		_ = os.Remove(tempPath)
+		return Session{}, ErrIncomplete
 	}
 	if err := output.Close(); err != nil {
 		_ = os.Remove(tempPath)
@@ -217,6 +232,7 @@ func (m *Manager) Complete(id, destinationPath string) (Session, error) {
 		return Session{}, err
 	}
 
+	state.session.SHA256 = sum
 	m.mu.Lock()
 	delete(m.open, id)
 	m.mu.Unlock()
@@ -226,11 +242,18 @@ func (m *Manager) Complete(id, destinationPath string) (Session, error) {
 
 func (m *Manager) state(id string) (*sessionState, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	state := m.open[id]
 	if state == nil || state.session.ExpiresAt.Before(time.Now().UTC()) {
+		if state != nil {
+			delete(m.open, id)
+		}
+		m.mu.Unlock()
+		if state != nil {
+			_ = os.RemoveAll(m.sessionDir(id))
+		}
 		return nil, ErrNotFound
 	}
+	m.mu.Unlock()
 	return state, nil
 }
 
@@ -240,4 +263,20 @@ func (m *Manager) sessionDir(id string) string {
 
 func (m *Manager) chunkPath(id string, index int64) string {
 	return filepath.Join(m.sessionDir(id), fmt.Sprintf("%012d.chunk", index))
+}
+
+func cleanupSessionDirs(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }

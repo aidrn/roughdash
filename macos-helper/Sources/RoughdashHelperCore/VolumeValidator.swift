@@ -1,4 +1,5 @@
 import Foundation
+import FileProvider
 
 public struct VolumeValidator {
     public init() {}
@@ -32,6 +33,26 @@ public struct VolumeValidator {
         }
         if !format.contains("apfs") {
             return VolumeCheck(url: url, volumeUUID: uuid, isSupported: false, reason: "The selected volume must be formatted as APFS.")
+        }
+        if #available(macOS 15.0, *) {
+            switch try NSFileProviderManager.checkDomainsCanBeStoredOnVolume(at: url) {
+            case .eligible:
+                break
+            case .ineligible(let reason):
+                return VolumeCheck(
+                    url: url,
+                    volumeUUID: uuid,
+                    isSupported: false,
+                    reason: "The selected volume is not eligible for File Provider domains: \(FileProviderDomainRegistrar.describeUnsupportedReason(reason))."
+                )
+            @unknown default:
+                return VolumeCheck(
+                    url: url,
+                    volumeUUID: uuid,
+                    isSupported: false,
+                    reason: "The selected volume returned an unknown File Provider eligibility result."
+                )
+            }
         }
         return VolumeCheck(url: url, volumeUUID: uuid, isSupported: true, reason: nil)
     }

@@ -1,0 +1,6 @@
+// Copy this file to Local.xcconfig and fill in your Apple Developer values.
+// Local.xcconfig is intentionally ignored by git.
+
+ROUGHDDASH_DEVELOPMENT_TEAM = YOURTEAMID
+ROUGHDDASH_BUNDLE_ID_PREFIX = com.yourname.roughdash.helper
+ROUGHDDASH_APP_GROUP_IDENTIFIER = group.com.yourname.roughdash.helper

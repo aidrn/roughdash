@@ -9,4 +9,21 @@ if ! command -v swift >/dev/null 2>&1; then
   exit 1
 fi
 
-swift build
+BUILD_PATH="${ROUGHDDASH_SWIFT_BUILD_PATH:-/tmp/roughdash-helper-build}"
+INDEX_PATH="${ROUGHDDASH_SWIFT_INDEX_STORE_PATH:-/tmp/roughdash-helper-index}"
+ACTION="${1:-build}"
+
+swift_args=(--build-path "$BUILD_PATH" -Xswiftc -index-store-path -Xswiftc "$INDEX_PATH")
+
+case "$ACTION" in
+  build)
+    swift build "${swift_args[@]}"
+    ;;
+  run)
+    swift run "${swift_args[@]}" RoughdashHelperApp
+    ;;
+  *)
+    echo "usage: $0 [build|run]" >&2
+    exit 2
+    ;;
+esac

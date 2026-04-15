@@ -14,7 +14,7 @@ public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
     }
 
     public var parentItemIdentifier: NSFileProviderItemIdentifier {
-        item.parentId == "root" ? .rootContainer : NSFileProviderItemIdentifier(item.parentId)
+        item.parentId == "root" ? RoughdashFileProviderIdentifiers.projectRootIdentifier(projectID: item.projectId) : NSFileProviderItemIdentifier(item.parentId)
     }
 
     public var filename: String {

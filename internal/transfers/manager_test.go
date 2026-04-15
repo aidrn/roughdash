@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestUploadTransferAssemblesAndVerifiesChunks(t *testing.T) {
@@ -73,5 +74,72 @@ func TestUploadTransferRejectsChecksumMismatch(t *testing.T) {
 	}
 	if _, err := manager.Complete(session.ID, filepath.Join(t.TempDir(), "file.txt")); !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+}
+
+func TestUploadTransferRejectsShortPayloadWithoutChecksum(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	session, err := manager.Create(context.Background(), Session{
+		Direction:    DirectionUpload,
+		ProjectID:    "project",
+		RelativePath: "file.txt",
+		Size:         8,
+		ChunkSize:    8,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := manager.WriteChunk(session.ID, 0, bytes.NewReader([]byte("tiny"))); err != nil {
+		t.Fatalf("write chunk: %v", err)
+	}
+	destination := filepath.Join(t.TempDir(), "file.txt")
+	if _, err := manager.Complete(session.ID, destination); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("expected incomplete transfer, got %v", err)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination should not exist after incomplete transfer: %v", err)
+	}
+}
+
+func TestExpiredTransferCleansSessionDirectory(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	session, err := manager.Create(context.Background(), Session{
+		Direction:    DirectionUpload,
+		ProjectID:    "project",
+		RelativePath: "file.txt",
+		Size:         4,
+		ChunkSize:    4,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	manager.mu.Lock()
+	manager.open[session.ID].session.ExpiresAt = time.Now().Add(-time.Minute)
+	manager.mu.Unlock()
+	if _, err := manager.Get(session.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected expired session to be missing, got %v", err)
+	}
+	if _, err := os.Stat(manager.sessionDir(session.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session directory should be removed after expiry: %v", err)
+	}
+}
+
+func TestNewManagerRemovesOrphanedSessionDirectories(t *testing.T) {
+	tempDir := t.TempDir()
+	orphan := filepath.Join(tempDir, transferDirectory, "orphan")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatalf("mkdir orphan: %v", err)
+	}
+	if _, err := NewManager(tempDir); err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan directory should be removed: %v", err)
 	}
 }

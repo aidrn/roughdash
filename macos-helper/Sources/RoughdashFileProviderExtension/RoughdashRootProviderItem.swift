@@ -2,8 +2,12 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-struct RoughdashRootProviderItem: NSFileProviderItem {
+final class RoughdashRootProviderItem: NSObject, NSFileProviderItem {
     let domain: NSFileProviderDomain
+
+    init(domain: NSFileProviderDomain) {
+        self.domain = domain
+    }
 
     var itemIdentifier: NSFileProviderItemIdentifier { .rootContainer }
     var parentItemIdentifier: NSFileProviderItemIdentifier { .rootContainer }

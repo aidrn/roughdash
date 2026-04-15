@@ -1,0 +1,94 @@
+name: RoughdashHelper
+options:
+  bundleIdPrefix: com.roughdash
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+configFiles:
+  Debug: Configuration/Debug.xcconfig
+  Release: Configuration/Release.xcconfig
+settings:
+  base:
+    DEVELOPMENT_TEAM: $(ROUGHDDASH_DEVELOPMENT_TEAM)
+    CODE_SIGN_STYLE: Automatic
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "6.0"
+targets:
+  RoughdashHelperCore:
+    type: framework
+    platform: macOS
+    sources:
+      - Sources/RoughdashHelperCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ROUGHDDASH_BUNDLE_ID_PREFIX).core
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+
+  RoughdashHelperApp:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/RoughdashHelperApp
+    dependencies:
+      - target: RoughdashHelperCore
+      - target: RoughdashFileProviderExtension
+        embed: true
+        codeSign: true
+      - target: RoughdashFileProviderUI
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_NAME: RoughdashHelper
+        PRODUCT_BUNDLE_IDENTIFIER: $(ROUGHDDASH_BUNDLE_ID_PREFIX)
+        INFOPLIST_FILE: Configuration/RoughdashHelperApp-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Configuration/RoughdashHelper.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME:
+
+  RoughdashFileProviderExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources/RoughdashFileProviderExtension
+    dependencies:
+      - target: RoughdashHelperCore
+    settings:
+      base:
+        PRODUCT_NAME: RoughdashFileProviderExtension
+        PRODUCT_BUNDLE_IDENTIFIER: $(ROUGHDDASH_BUNDLE_ID_PREFIX).fileprovider
+        INFOPLIST_FILE: Configuration/FileProviderExtension-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Configuration/RoughdashHelper.entitlements
+        SKIP_INSTALL: YES
+
+  RoughdashFileProviderUI:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources/RoughdashFileProviderUI
+    dependencies:
+      - target: RoughdashHelperCore
+    settings:
+      base:
+        PRODUCT_NAME: RoughdashFileProviderUI
+        PRODUCT_BUNDLE_IDENTIFIER: $(ROUGHDDASH_BUNDLE_ID_PREFIX).fileprovider-ui
+        INFOPLIST_FILE: Configuration/FileProviderUI-Info.plist
+        CODE_SIGN_ENTITLEMENTS: Configuration/RoughdashHelper.entitlements
+        SKIP_INSTALL: YES
+
+schemes:
+  RoughdashHelperApp:
+    build:
+      targets:
+        RoughdashHelperApp: all
+        RoughdashHelperCore: all
+        RoughdashFileProviderExtension: all
+        RoughdashFileProviderUI: all
+    run:
+      config: Debug
+    archive:
+      config: Release

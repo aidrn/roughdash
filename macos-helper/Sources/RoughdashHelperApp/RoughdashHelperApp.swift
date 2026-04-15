@@ -3,12 +3,23 @@ import SwiftUI
 
 @main
 struct RoughdashHelperApp: App {
-    @State private var state = HelperAppState()
+    @State private var state: HelperAppState
+
+    init() {
+        let appState = HelperAppState()
+        _state = State(initialValue: appState)
+        Task { @MainActor in
+            await appState.handleLaunchArguments()
+        }
+    }
 
     var body: some Scene {
         WindowGroup("Roughdash Helper") {
             ContentView(state: state)
                 .frame(minWidth: 900, minHeight: 560)
+                .task {
+                    await state.handleLaunchArguments()
+                }
         }
         .commands {
             CommandMenu("Sync") {

@@ -1,0 +1,4 @@
+#include "Shared.xcconfig"
+#include? "Local.xcconfig"
+
+SWIFT_COMPILATION_MODE = wholemodule

@@ -21,16 +21,12 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         completionHandler: @escaping (NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        Task {
-            if identifier == .rootContainer {
-                completionHandler(RoughdashRootProviderItem(domain: domain), nil)
-            } else if let item = await catalog.item(id: identifier.rawValue) {
-                completionHandler(RoughdashProviderItem(item: item), nil)
-            } else {
-                completionHandler(nil, NSFileProviderError(.noSuchItem))
-            }
-            progress.completedUnitCount = 1
+        if identifier == .rootContainer {
+            completionHandler(RoughdashRootProviderItem(domain: domain), nil)
+        } else {
+            completionHandler(nil, NSFileProviderError(.noSuchItem))
         }
+        progress.completedUnitCount = 1
         return progress
     }
 
@@ -41,17 +37,10 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        Task {
-            guard let item = await catalog.item(id: itemIdentifier.rawValue) else {
-                completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
-                progress.completedUnitCount = 1
-                return
-            }
-            // The real implementation hydrates through TransferClient, writes to the
-            // provider storage URL, and returns that file URL with the updated item.
-            completionHandler(nil, RoughdashProviderItem(item: item), NSFileProviderError(.serverUnreachable))
-            progress.completedUnitCount = 1
-        }
+        // The real implementation hydrates through TransferClient, writes to the
+        // provider storage URL, and returns that file URL with the updated item.
+        completionHandler(nil, nil, NSFileProviderError(.serverUnreachable))
+        progress.completedUnitCount = 1
         return progress
     }
 
