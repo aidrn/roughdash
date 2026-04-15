@@ -85,6 +85,20 @@ func TestSyncProjectItemPinAndConflictLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create conflict: %v", err)
 	}
+	duplicateConflict, err := store.CreateSyncConflict(ctx, models.SyncConflict{
+		ProjectID:    project.ID,
+		ItemID:       item.ID,
+		BaseRevision: 1,
+		NASRevision:  2,
+		SSDRevision:  2,
+		Fields:       "content",
+	})
+	if err != nil {
+		t.Fatalf("create duplicate conflict: %v", err)
+	}
+	if duplicateConflict.ID != conflict.ID {
+		t.Fatalf("expected duplicate conflict to return existing row: got %s want %s", duplicateConflict.ID, conflict.ID)
+	}
 	openConflicts, err := store.ListSyncConflicts(ctx, models.SyncConflictStatusOpen)
 	if err != nil {
 		t.Fatalf("list conflicts: %v", err)

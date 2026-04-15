@@ -27,6 +27,28 @@ public struct SyncDevice: Codable, Identifiable, Sendable {
     public var lastConnectionMode: String?
     public var pairedAt: Date?
     public var lastSeenAt: Date?
+
+    public init(
+        id: String? = nil,
+        helperId: String? = nil,
+        machineId: String,
+        name: String,
+        platform: String = "darwin",
+        ssdVolumeUuid: String,
+        lastConnectionMode: String? = nil,
+        pairedAt: Date? = nil,
+        lastSeenAt: Date? = nil
+    ) {
+        self.id = id
+        self.helperId = helperId
+        self.machineId = machineId
+        self.name = name
+        self.platform = platform
+        self.ssdVolumeUuid = ssdVolumeUuid
+        self.lastConnectionMode = lastConnectionMode
+        self.pairedAt = pairedAt
+        self.lastSeenAt = lastSeenAt
+    }
 }
 
 public struct SyncLease: Codable, Sendable {
@@ -68,6 +90,20 @@ public struct SyncConflict: Codable, Identifiable, Sendable {
     public var resolvedAt: Date?
 }
 
+public struct SyncRevision: Codable, Identifiable, Sendable {
+    public var id: String
+    public var projectId: String
+    public var itemId: String
+    public var deviceId: String?
+    public var baseRevision: Int64
+    public var revision: Int64
+    public var operation: String
+    public var contentHash: String
+    public var metadataHash: String
+    public var details: String
+    public var createdAt: Date
+}
+
 public struct SyncPin: Codable, Identifiable, Sendable {
     public var id: String?
     public var projectId: String
@@ -97,6 +133,13 @@ public struct TransferChunkReceipt: Codable, Sendable {
     public var index: Int64
     public var size: Int64
     public var sha256: String
+}
+
+public struct CompletedTransfer: Sendable {
+    public var transfer: TransferSession
+    public var path: String
+    public var item: SyncItem
+    public var revision: SyncRevision
 }
 
 public struct VolumeCheck: Sendable {

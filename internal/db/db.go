@@ -1183,11 +1183,20 @@ func (s *Store) AppendSyncRevision(ctx context.Context, revision models.SyncRevi
 }
 
 func (s *Store) CreateSyncConflict(ctx context.Context, conflict models.SyncConflict) (*models.SyncConflict, error) {
-	if conflict.ID == "" {
-		conflict.ID = uuid.NewString()
-	}
 	if conflict.Status == "" {
 		conflict.Status = models.SyncConflictStatusOpen
+	}
+	if conflict.Status == models.SyncConflictStatusOpen {
+		existing, err := s.getOpenSyncConflict(ctx, conflict)
+		if err == nil {
+			return existing, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	if conflict.ID == "" {
+		conflict.ID = uuid.NewString()
 	}
 	if conflict.CreatedAt.IsZero() {
 		conflict.CreatedAt = time.Now().UTC()
@@ -1203,6 +1212,30 @@ func (s *Store) CreateSyncConflict(ctx context.Context, conflict models.SyncConf
 		return nil, err
 	}
 	return &conflict, nil
+}
+
+func (s *Store) getOpenSyncConflict(ctx context.Context, conflict models.SyncConflict) (*models.SyncConflict, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, project_id, item_id, base_revision, nas_revision, ssd_revision, fields, status, created_at, resolved_at
+		FROM sync_conflicts
+		WHERE project_id = ? AND item_id = ? AND base_revision = ? AND nas_revision = ? AND ssd_revision = ?
+			AND fields = ? AND status = ?
+		ORDER BY created_at DESC
+		LIMIT 1;
+	`, conflict.ProjectID, conflict.ItemID, conflict.BaseRevision, conflict.NASRevision, conflict.SSDRevision,
+		conflict.Fields, models.SyncConflictStatusOpen)
+
+	var existing models.SyncConflict
+	var resolved sql.NullTime
+	if err := row.Scan(&existing.ID, &existing.ProjectID, &existing.ItemID, &existing.BaseRevision, &existing.NASRevision,
+		&existing.SSDRevision, &existing.Fields, &existing.Status, &existing.CreatedAt, &resolved); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	existing.ResolvedAt = nullTimePtr(resolved)
+	return &existing, nil
 }
 
 func (s *Store) ListSyncConflicts(ctx context.Context, status string) ([]models.SyncConflict, error) {

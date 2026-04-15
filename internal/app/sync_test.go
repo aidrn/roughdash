@@ -177,6 +177,48 @@ func TestSyncTransferRequiresLeaseAndCatalogsCompletedUpload(t *testing.T) {
 	if !bytes.Equal(written, payload) {
 		t.Fatalf("unexpected upload payload %q", written)
 	}
+
+	outsideDir := filepath.Join(server.cfg.NASRoot, "outside-upload")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside upload dir: %v", err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(project.RootPath, "LinkedOutside")); err != nil {
+		t.Fatalf("create outside symlink: %v", err)
+	}
+	response = doSyncJSON(t, handler, http.MethodPost, "/api/sync/transfers", map[string]any{
+		"direction":    "upload",
+		"projectId":    project.ID,
+		"deviceId":     device.ID,
+		"relativePath": "LinkedOutside/escape.txt",
+		"baseRevision": float64(0),
+		"size":         float64(len(payload)),
+		"chunkSize":    float64(len(payload)),
+		"sha256":       hex.EncodeToString(sum[:]),
+	}, helper.ID, token)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create symlink transfer: got %d: %s", response.Code, response.Body.String())
+	}
+	var symlinkTransfer struct {
+		Transfer struct {
+			ID string `json:"id"`
+		} `json:"transfer"`
+	}
+	decodeSyncResponse(t, response, &symlinkTransfer)
+	chunkReq = httptest.NewRequest(http.MethodPut, "/api/sync/transfers/"+symlinkTransfer.Transfer.ID+"/chunks/0", bytes.NewReader(payload))
+	chunkReq.Header.Set("Authorization", "Bearer "+token)
+	chunkReq.Header.Set("X-Roughdash-Helper-ID", helper.ID)
+	chunkResp = httptest.NewRecorder()
+	handler.ServeHTTP(chunkResp, chunkReq)
+	if chunkResp.Code != http.StatusOK {
+		t.Fatalf("write symlink chunk: got %d: %s", chunkResp.Code, chunkResp.Body.String())
+	}
+	response = doSyncJSON(t, handler, http.MethodPost, "/api/sync/transfers/"+symlinkTransfer.Transfer.ID+"/complete", nil, helper.ID, token)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected symlink parent upload to be rejected, got %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("symlink parent upload wrote outside project root or stat failed unexpectedly: %v", err)
+	}
 }
 
 func TestSyncTransferCreatesConflictForStaleBaseRevision(t *testing.T) {
@@ -480,7 +522,11 @@ func TestSyncDisposableNASPublicAPISmoke(t *testing.T) {
 	}
 	postHTTPJSON(t, helperClient, http.MethodPost, httpServer.URL+"/api/sync/transfers/"+createdTransfer.Transfer.ID+"/complete", helperHeaders, nil, http.StatusOK, &completed)
 
-	expectedPath := filepath.Join(projectRoot, "Safe", "file.txt")
+	resolvedProjectRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		t.Fatalf("resolve project root: %v", err)
+	}
+	expectedPath := filepath.Join(resolvedProjectRoot, "Safe", "file.txt")
 	if completed.Path != expectedPath {
 		t.Fatalf("unexpected completed path: got %q want %q", completed.Path, expectedPath)
 	}

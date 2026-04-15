@@ -21,6 +21,7 @@ final class HelperAppState {
     var projects: [SyncProject] = []
     var items: [SyncItem] = []
     var conflicts: [SyncConflict] = []
+    var syncDevice: SyncDevice?
     var connectionMode: ConnectionMode = .lanDirect
     var statusMessage = "Pair with Roughdash and select a dedicated APFS encrypted SSD."
     var isBusy = false
@@ -80,6 +81,12 @@ final class HelperAppState {
             } else {
                 statusMessage = "Registered Roughdash File Provider domain using standard macOS storage. External-volume File Provider domains returned NSFeatureUnsupportedError on this Mac."
             }
+            do {
+                try await refreshCatalogFromServer()
+            } catch {
+                logger.error("Could not refresh Roughdash catalog after File Provider registration: \(error.localizedDescription, privacy: .public)")
+                statusMessage += " Catalog refresh failed: \(error.localizedDescription)"
+            }
             persistState()
             await notifyFileProviderCatalogChanged()
             logger.info("Registered File Provider domain \(registration.identifier, privacy: .public) on \(selectedVolumeURL.path, privacy: .public)")
@@ -94,16 +101,7 @@ final class HelperAppState {
         isBusy = true
         defer { isBusy = false }
         do {
-            let loadedProjects = try await api.listProjects()
-            var loadedItems: [SyncItem] = []
-            for project in loadedProjects where project.enabled {
-                if let rootItems = try? await api.listItems(projectID: project.id) {
-                    loadedItems.append(contentsOf: rootItems)
-                }
-            }
-            projects = loadedProjects
-            items = loadedItems
-            conflicts = try await api.listConflicts()
+            try await refreshCatalogFromServer()
             persistState()
             await notifyFileProviderCatalogChanged()
             statusMessage = "Loaded \(projects.count) project roots and \(conflicts.count) open conflicts."
@@ -143,6 +141,7 @@ final class HelperAppState {
         projects = snapshot.projects
         items = snapshot.items
         conflicts = snapshot.conflicts
+        syncDevice = snapshot.syncDevice
         if let message = snapshot.statusMessage {
             statusMessage = message
         }
@@ -175,6 +174,7 @@ final class HelperAppState {
             selectedVolumePath: selectedVolumeURL?.path,
             selectedVolumeBookmark: selectedVolumeBookmark,
             volumeUUID: volumeCheck?.volumeUUID,
+            syncDevice: syncDevice,
             fileProviderDomainIdentifier: domainIdentifier.isEmpty ? nil : domainIdentifier,
             projects: projects,
             items: items,
@@ -209,6 +209,22 @@ final class HelperAppState {
 
         if !persistenceErrors.isEmpty {
             statusMessage = "Could not save Roughdash helper state: \(persistenceErrors.joined(separator: "; "))"
+        }
+    }
+
+    private func refreshCatalogFromServer() async throws {
+        let loadedProjects = try await api.listProjects()
+        var loadedItems: [SyncItem] = []
+        for project in loadedProjects where project.enabled {
+            if let rootItems = try? await api.listItems(projectID: project.id) {
+                loadedItems.append(contentsOf: rootItems)
+            }
+        }
+        projects = loadedProjects
+        items = loadedItems
+        conflicts = try await api.listConflicts()
+        if let volumeUUID = volumeCheck?.volumeUUID {
+            syncDevice = try await api.listDevices().first(where: { $0.ssdVolumeUuid == volumeUUID })
         }
     }
 

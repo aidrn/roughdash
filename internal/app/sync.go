@@ -291,6 +291,9 @@ func (s *Server) handleSyncDevicesList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if devices == nil {
+		devices = []models.SyncDevice{}
+	}
 	if actor, ok := currentSyncActor(r); ok && actor.Kind == "helper" {
 		filtered := devices[:0]
 		for _, device := range devices {
@@ -747,8 +750,8 @@ func (s *Server) handleSyncTransferComplete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("valid relativePath is required"))
 		return
 	}
-	destination := filepath.Join(project.RootPath, filepath.FromSlash(relativePath))
-	if err := system.EnsureWithinRoot(project.RootPath, destination); err != nil {
+	destination, err := syncDestinationPath(project.RootPath, relativePath)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -854,6 +857,63 @@ func normalizeSyncRelativePath(value string) (string, error) {
 		return "", errors.New("path escapes project root")
 	}
 	return cleaned, nil
+}
+
+func syncDestinationPath(projectRoot, relativePath string) (string, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return "", err
+	}
+
+	parentPath := path.Dir(relativePath)
+	segments := []string{}
+	if parentPath != "." {
+		segments = strings.Split(parentPath, "/")
+	}
+
+	current := resolvedRoot
+	for index, segment := range segments {
+		if segment == "" || segment == "." {
+			continue
+		}
+		next := filepath.Join(current, segment)
+		info, err := os.Lstat(next)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return "", err
+			}
+			remaining := append([]string{segment}, segments[index+1:]...)
+			destination := filepath.Join(current, filepath.Join(remaining...), path.Base(relativePath))
+			if err := system.EnsureWithinRoot(resolvedRoot, destination); err != nil {
+				return "", err
+			}
+			return destination, nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			next, err = filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", err
+			}
+			if err := system.EnsureWithinRoot(resolvedRoot, next); err != nil {
+				return "", err
+			}
+			current = next
+			continue
+		}
+		if !info.IsDir() {
+			return "", errors.New("sync item parent path is not a directory")
+		}
+		if err := system.EnsureWithinRoot(resolvedRoot, next); err != nil {
+			return "", err
+		}
+		current = next
+	}
+
+	destination := filepath.Join(current, path.Base(relativePath))
+	if err := system.EnsureWithinRoot(resolvedRoot, destination); err != nil {
+		return "", err
+	}
+	return destination, nil
 }
 
 func currentSyncActor(r *http.Request) (syncActor, bool) {

@@ -7,6 +7,7 @@ public struct HelperSnapshot: Codable, Sendable {
     public var selectedVolumePath: String?
     public var selectedVolumeBookmark: Data?
     public var volumeUUID: String?
+    public var syncDevice: SyncDevice?
     public var fileProviderDomainIdentifier: String?
     public var projects: [SyncProject]
     public var items: [SyncItem]
@@ -21,6 +22,7 @@ public struct HelperSnapshot: Codable, Sendable {
         selectedVolumePath: String? = nil,
         selectedVolumeBookmark: Data? = nil,
         volumeUUID: String? = nil,
+        syncDevice: SyncDevice? = nil,
         fileProviderDomainIdentifier: String? = nil,
         projects: [SyncProject] = [],
         items: [SyncItem] = [],
@@ -34,6 +36,7 @@ public struct HelperSnapshot: Codable, Sendable {
         self.selectedVolumePath = selectedVolumePath
         self.selectedVolumeBookmark = selectedVolumeBookmark
         self.volumeUUID = volumeUUID
+        self.syncDevice = syncDevice
         self.fileProviderDomainIdentifier = fileProviderDomainIdentifier
         self.projects = projects
         self.items = items
@@ -85,28 +88,55 @@ public struct HelperStorage {
     }
 
     public func readSnapshot() throws -> HelperSnapshot? {
-        let url = snapshotURL
-        if FileManager.default.fileExists(atPath: url.path) {
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder.roughdash.decode(HelperSnapshot.self, from: data)
+        let primarySnapshot = try readSnapshot(at: snapshotURL)
+        let legacySnapshot = try legacySnapshotURL.flatMap { try readSnapshot(at: $0) }
+
+        if let primarySnapshot, let legacySnapshot {
+            return legacySnapshot.updatedAt > primarySnapshot.updatedAt ? legacySnapshot : primarySnapshot
         }
 
-        guard let legacySnapshotURL, FileManager.default.fileExists(atPath: legacySnapshotURL.path) else {
-            return nil
+        if let primarySnapshot {
+            return primarySnapshot
         }
 
-        let data = try Data(contentsOf: legacySnapshotURL)
-        let snapshot = try JSONDecoder.roughdash.decode(HelperSnapshot.self, from: data)
-        try? writeSnapshot(snapshot)
-        return snapshot
+        if let legacySnapshot {
+            try? writeSnapshot(legacySnapshot)
+            return legacySnapshot
+        }
+
+        return nil
     }
 
     public func writeSnapshot(_ snapshot: HelperSnapshot) throws {
-        try ensureRoughdashDirectory()
         let data = try JSONEncoder.roughdash.encode(snapshot)
-        try data.write(to: snapshotURL, options: .atomic)
-        if storageLocation == .appGroup {
-            try? writeLegacySnapshot(data)
+
+        switch storageLocation {
+        case .appGroup:
+            var errors: [String] = []
+            var didWrite = false
+
+            do {
+                try write(data, to: snapshotURL)
+                didWrite = true
+            } catch {
+                errors.append(Self.describe(error))
+            }
+
+            if let legacySnapshotURL {
+                do {
+                    try write(data, to: legacySnapshotURL)
+                    didWrite = true
+                } catch {
+                    errors.append(Self.describe(error))
+                }
+            }
+
+            if !didWrite {
+                throw HelperStorageWriteError(errors.joined(separator: "; "))
+            }
+
+        case .fileProviderStateDirectory:
+            try write(data, to: snapshotURL)
         }
     }
 
@@ -121,14 +151,10 @@ public struct HelperStorage {
         try data.write(to: metadataDirectory.appendingPathComponent("helper-state.json"), options: .atomic)
     }
 
-    private var fileProviderStorageDirectory: URL {
-        containerURL.appendingPathComponent("File Provider Storage", isDirectory: true)
-    }
-
     private var roughdashDirectory: URL {
         switch storageLocation {
         case .appGroup:
-            fileProviderStorageDirectory.appendingPathComponent("Roughdash", isDirectory: true)
+            legacyRoughdashDirectory
         case .fileProviderStateDirectory:
             containerURL.appendingPathComponent("Roughdash", isDirectory: true)
         }
@@ -145,22 +171,40 @@ public struct HelperStorage {
     private var legacySnapshotURL: URL? {
         switch storageLocation {
         case .appGroup:
-            legacyRoughdashDirectory.appendingPathComponent("state.json")
+            nil
         case .fileProviderStateDirectory:
             nil
         }
     }
 
-    private func ensureRoughdashDirectory() throws {
-        try FileManager.default.createDirectory(at: roughdashDirectory, withIntermediateDirectories: true)
+    private func readSnapshot(at url: URL) throws -> HelperSnapshot? {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder.roughdash.decode(HelperSnapshot.self, from: data)
     }
 
-    private func writeLegacySnapshot(_ data: Data) throws {
-        guard let legacySnapshotURL else {
-            return
-        }
-        try FileManager.default.createDirectory(at: legacyRoughdashDirectory, withIntermediateDirectories: true)
-        try data.write(to: legacySnapshotURL, options: .atomic)
+    private func write(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    private static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "\(error.localizedDescription) (domain=\(nsError.domain), code=\(nsError.code))"
+    }
+}
+
+private struct HelperStorageWriteError: Error, LocalizedError {
+    var message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? {
+        message
     }
 }
 

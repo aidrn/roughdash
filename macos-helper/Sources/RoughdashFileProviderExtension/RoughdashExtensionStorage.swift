@@ -25,6 +25,45 @@ enum RoughdashExtensionStorage {
         }
     }
 
+    static func writeSnapshot(_ snapshot: HelperSnapshot, for domain: NSFileProviderDomain) throws {
+        var errors: [String] = []
+        var didWrite = false
+
+        if #available(macOS 15.0, *), let manager = NSFileProviderManager(for: domain) {
+            do {
+                let stateDirectoryURL = try manager.stateDirectoryURL()
+                let didAccessStateDirectory = stateDirectoryURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccessStateDirectory {
+                        stateDirectoryURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                let storage = HelperStorage(fileProviderStateDirectoryURL: stateDirectoryURL)
+                try storage.writeSnapshot(snapshot)
+                didWrite = true
+                logger.info("Wrote File Provider state snapshot to \(stateDirectoryURL.path, privacy: .public)")
+            } catch {
+                errors.append(describe(error))
+                logger.error("Could not write File Provider state snapshot: \(describe(error), privacy: .public)")
+            }
+        }
+
+        do {
+            let storage = try HelperStorage(appGroupIdentifier: appGroupIdentifier())
+            try storage.writeSnapshot(snapshot)
+            didWrite = true
+            logger.info("Wrote fallback App Group snapshot to \(storage.containerURL.path, privacy: .public)")
+        } catch {
+            errors.append(describe(error))
+            logger.error("Could not write fallback App Group snapshot: \(describe(error), privacy: .public)")
+        }
+
+        if !didWrite {
+            throw SnapshotWriteError(errors.joined(separator: "; "))
+        }
+    }
+
     private static func readStateDirectorySnapshot(for domain: NSFileProviderDomain) -> HelperSnapshot? {
         guard #available(macOS 15.0, *) else {
             return nil
@@ -87,5 +126,17 @@ enum RoughdashExtensionStorage {
             parts.append("userInfo={\(details)}")
         }
         return parts.joined(separator: " | ")
+    }
+}
+
+private struct SnapshotWriteError: Error, LocalizedError {
+    var message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? {
+        message
     }
 }

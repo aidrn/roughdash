@@ -8,11 +8,11 @@ public actor TransferClient {
         self.api = api
     }
 
-    public func uploadFile(projectID: String, deviceID: String, itemID: String?, relativePath: String, baseRevision: Int64, fileURL: URL) async throws -> TransferSession {
+    public func uploadFile(projectID: String, deviceID: String, itemID: String?, relativePath: String, baseRevision: Int64, fileURL: URL) async throws -> CompletedTransfer {
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-        let digest = try SHA256.hash(data: Data(contentsOf: fileURL)).map { String(format: "%02x", $0) }.joined()
-        var transfer = try await api.createTransfer(TransferSession(
+        let digest = try Self.sha256Hex(for: fileURL)
+        let transfer = try await api.createTransfer(TransferSession(
             id: nil,
             direction: "upload",
             projectId: projectID,
@@ -41,7 +41,21 @@ public actor TransferClient {
             _ = try await api.uploadChunk(transferID: transferID, index: index, data: data)
             index += 1
         }
-        transfer = try await api.completeTransfer(transferID: transferID)
-        return transfer
+        return try await api.completeTransfer(transferID: transferID)
+    }
+
+    private static func sha256Hex(for fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 8 * 1024 * 1024) ?? Data()
+            if data.isEmpty {
+                break
+            }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

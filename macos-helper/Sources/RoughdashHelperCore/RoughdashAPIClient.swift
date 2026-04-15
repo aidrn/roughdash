@@ -29,6 +29,11 @@ public actor RoughdashAPIClient {
         return response.device
     }
 
+    public func listDevices() async throws -> [SyncDevice] {
+        let response: DevicesResponse = try await request("GET", "/api/sync/devices")
+        return response.devices ?? []
+    }
+
     public func acquireLease(deviceID: String, volumeUUID: String, force: Bool = false) async throws -> SyncLease {
         let body = LeaseRequest(ssdVolumeUuid: volumeUUID, ttlSeconds: 300, force: force)
         let response: LeaseResponse = try await request("POST", "/api/sync/devices/\(deviceID)/lease", body: body)
@@ -69,15 +74,21 @@ public actor RoughdashAPIClient {
 
     public func uploadChunk(transferID: String, index: Int64, data: Data) async throws -> TransferChunkReceipt {
         var request = try urlRequest("PUT", "/api/sync/transfers/\(transferID)/chunks/\(index)")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
         let (body, response) = try await session.data(for: request)
         try validate(response: response, body: body)
         return try decoder.decode(ChunkResponse.self, from: body).chunk
     }
 
-    public func completeTransfer(transferID: String) async throws -> TransferSession {
-        let response: TransferResponse = try await request("POST", "/api/sync/transfers/\(transferID)/complete")
-        return response.transfer
+    public func completeTransfer(transferID: String) async throws -> CompletedTransfer {
+        let response: CompleteTransferResponse = try await request("POST", "/api/sync/transfers/\(transferID)/complete")
+        return CompletedTransfer(
+            transfer: response.transfer,
+            path: response.path,
+            item: response.item,
+            revision: response.revision
+        )
     }
 
     private func request<Response: Decodable>(_ method: String, _ path: String) async throws -> Response {
@@ -138,12 +149,19 @@ public enum APIError: Error, LocalizedError {
 
 private struct ProjectsResponse: Decodable { var projects: [SyncProject] }
 private struct DeviceResponse: Decodable { var device: SyncDevice }
+private struct DevicesResponse: Decodable { var devices: [SyncDevice]? }
 private struct LeaseRequest: Encodable { var ssdVolumeUuid: String; var ttlSeconds: Int; var force: Bool }
 private struct LeaseResponse: Decodable { var lease: SyncLease }
 private struct ItemsResponse: Decodable { var items: [SyncItem] }
 private struct PinResponse: Decodable { var pin: SyncPin }
 private struct ConflictsResponse: Decodable { var conflicts: [SyncConflict] }
 private struct TransferResponse: Decodable { var transfer: TransferSession }
+private struct CompleteTransferResponse: Decodable {
+    var transfer: TransferSession
+    var path: String
+    var item: SyncItem
+    var revision: SyncRevision
+}
 private struct ChunkResponse: Decodable { var chunk: TransferChunkReceipt }
 private struct ErrorResponse: Decodable { var error: String }
 

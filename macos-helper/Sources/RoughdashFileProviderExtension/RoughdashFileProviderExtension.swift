@@ -111,9 +111,60 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        // The real implementation marks the item dirty locally, then uploads or creates a conflict.
-        completionHandler(nil, changedFields, false, NSFileProviderError(.serverUnreachable))
-        progress.completedUnitCount = 1
+        let modification = FileProviderItemModification(progress: progress, completionHandler: completionHandler)
+        let itemID = item.itemIdentifier.rawValue
+        let baseContentHash = String(data: version.contentVersion, encoding: .utf8)
+
+        Task {
+            do {
+                var snapshot = RoughdashExtensionStorage.readSnapshot(for: domain)
+                guard let existing = snapshot.items.first(where: { $0.id == itemID && !$0.tombstoned }) else {
+                    throw NSFileProviderError(.noSuchItem)
+                }
+                guard let contentURL = newContents else {
+                    logger.info("Accepted metadata-only File Provider modify for \(itemID, privacy: .public)")
+                    modification.complete(RoughdashProviderItem(item: existing), [], false, nil)
+                    return
+                }
+                guard let serverURL = URL(string: snapshot.serverURL),
+                      !snapshot.helperID.isEmpty,
+                      let helperToken = snapshot.helperToken,
+                      !helperToken.isEmpty else {
+                    throw NSFileProviderError(.notAuthenticated)
+                }
+
+                let didAccess = contentURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess {
+                        contentURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                let api = RoughdashAPIClient(baseURL: serverURL, helperID: snapshot.helperID, helperToken: helperToken)
+                let upload = try await SyncUploadCoordinator(api: api).uploadExistingFile(
+                    snapshot: snapshot,
+                    item: existing,
+                    fileURL: contentURL,
+                    baseContentHash: baseContentHash
+                )
+                snapshot.syncDevice = upload.device
+                if let index = snapshot.items.firstIndex(where: { $0.id == upload.completed.item.id }) {
+                    snapshot.items[index] = upload.completed.item
+                } else {
+                    snapshot.items.append(upload.completed.item)
+                }
+                snapshot.updatedAt = Date()
+                try RoughdashExtensionStorage.writeSnapshot(snapshot, for: domain)
+                await signalWorkingSetChanged()
+
+                logger.info("Uploaded File Provider item \(itemID, privacy: .public) as revision \(upload.completed.item.revision, privacy: .public)")
+                modification.complete(RoughdashProviderItem(item: upload.completed.item), [], false, nil)
+            } catch {
+                logger.error("Could not upload File Provider item \(itemID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                modification.complete(nil, changedFields, false, Self.fileProviderError(for: error))
+            }
+        }
+
         return progress
     }
 
@@ -176,6 +227,45 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
             (48...57).contains(scalar.value) || (97...102).contains(scalar.value)
         }
     }
+
+    private func signalWorkingSetChanged() async {
+        guard let manager = NSFileProviderManager(for: domain) else {
+            return
+        }
+
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                manager.signalEnumerator(for: .workingSet) { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        } catch {
+            logger.error("Could not signal File Provider working set after upload: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static func fileProviderError(for error: Error) -> Error {
+        if let fileProviderError = error as? NSFileProviderError {
+            return fileProviderError
+        }
+        if let apiError = error as? APIError {
+            switch apiError {
+            case .server(let status, _) where status == 401 || status == 403:
+                return NSFileProviderError(.notAuthenticated)
+            case .server(let status, _) where status == 409:
+                return NSFileProviderError(.cannotSynchronize)
+            case .server:
+                return NSFileProviderError(.serverUnreachable)
+            case .invalidURL, .invalidResponse:
+                return NSFileProviderError(.serverUnreachable)
+            }
+        }
+        return NSFileProviderError(.cannotSynchronize)
+    }
 }
 
 private final class FileProviderContentFetch: @unchecked Sendable {
@@ -193,6 +283,24 @@ private final class FileProviderContentFetch: @unchecked Sendable {
     func complete(_ url: URL?, _ item: NSFileProviderItem?, _ error: Error?) {
         progress.completedUnitCount = 1
         completionHandler(url, item, error)
+    }
+}
+
+private final class FileProviderItemModification: @unchecked Sendable {
+    private let progress: Progress
+    private let completionHandler: (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+
+    init(
+        progress: Progress,
+        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) {
+        self.progress = progress
+        self.completionHandler = completionHandler
+    }
+
+    func complete(_ item: NSFileProviderItem?, _ remainingFields: NSFileProviderItemFields, _ shouldFetchContent: Bool, _ error: Error?) {
+        progress.completedUnitCount = 1
+        completionHandler(item, remainingFields, shouldFetchContent, error)
     }
 }
 
