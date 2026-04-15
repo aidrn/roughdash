@@ -26,6 +26,7 @@ import (
 	"roughdash/internal/jobs"
 	"roughdash/internal/models"
 	"roughdash/internal/system"
+	"roughdash/internal/transfers"
 )
 
 type ctxKey string
@@ -79,6 +80,7 @@ type Server struct {
 	helpers   *helpers.Manager
 	jobs      *jobs.Engine
 	events    *eventHub
+	transfers *transfers.Manager
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, error) {
@@ -94,6 +96,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 	}
 
 	events := newEventHub()
+	transferManager, err := transfers.NewManager(cfg.TempDir)
+	if err != nil {
+		return nil, err
+	}
 	server := &Server{
 		cfg:       cfg,
 		logger:    logger,
@@ -101,6 +107,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Server, 
 		downloads: downloads.NewService(cfg),
 		helpers:   helpers.NewManager(cfg, store),
 		events:    events,
+		transfers: transferManager,
 	}
 	server.jobs = jobs.NewEngine(store, server)
 	server.jobs.Register(models.JobTypeIngest, server.handleIngestJob)
@@ -153,6 +160,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.authRequired(s.handleSettingsPut))
 	mux.HandleFunc("GET /api/audit", s.authRequired(s.handleAudit))
 	mux.HandleFunc("POST /api/export", s.authRequired(s.handleExport))
+	mux.HandleFunc("GET /api/sync/projects", s.syncAccessRequired(s.handleSyncProjectsList))
+	mux.HandleFunc("POST /api/sync/projects", s.syncAccessRequired(s.handleSyncProjectsCreate))
+	mux.HandleFunc("GET /api/sync/projects/{id}/items", s.syncAccessRequired(s.handleSyncItemsList))
+	mux.HandleFunc("PUT /api/sync/projects/{id}/items", s.syncAccessRequired(s.handleSyncItemUpsert))
+	mux.HandleFunc("GET /api/sync/devices", s.syncAccessRequired(s.handleSyncDevicesList))
+	mux.HandleFunc("POST /api/sync/devices", s.syncAccessRequired(s.handleSyncDevicesCreate))
+	mux.HandleFunc("POST /api/sync/devices/{id}/lease", s.syncAccessRequired(s.handleSyncDeviceLease))
+	mux.HandleFunc("POST /api/sync/revisions", s.syncAccessRequired(s.handleSyncRevisionCreate))
+	mux.HandleFunc("GET /api/sync/conflicts", s.syncAccessRequired(s.handleSyncConflictsList))
+	mux.HandleFunc("POST /api/sync/conflicts", s.syncAccessRequired(s.handleSyncConflictsCreate))
+	mux.HandleFunc("POST /api/sync/conflicts/{id}/resolve", s.syncAccessRequired(s.handleSyncConflictResolve))
+	mux.HandleFunc("GET /api/sync/pins", s.syncAccessRequired(s.handleSyncPinsList))
+	mux.HandleFunc("POST /api/sync/pins", s.syncAccessRequired(s.handleSyncPinsUpsert))
+	mux.HandleFunc("DELETE /api/sync/pins/{id}", s.syncAccessRequired(s.handleSyncPinDelete))
+	mux.HandleFunc("POST /api/sync/transfers", s.syncAccessRequired(s.handleSyncTransferCreate))
+	mux.HandleFunc("PUT /api/sync/transfers/{id}/chunks/{index}", s.syncAccessRequired(s.handleSyncTransferChunk))
+	mux.HandleFunc("POST /api/sync/transfers/{id}/complete", s.syncAccessRequired(s.handleSyncTransferComplete))
 	mux.HandleFunc("GET /ws/helper", s.helpers.ServeWS)
 
 	fileServer := http.FileServer(http.Dir(s.cfg.StaticDir))
@@ -1273,7 +1297,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Roughdash-Helper-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

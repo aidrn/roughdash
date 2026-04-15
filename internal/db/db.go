@@ -18,7 +18,10 @@ import (
 	"roughdash/internal/models"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound  = errors.New("not found")
+	ErrLeaseHeld = errors.New("sync lease is held by another device")
+)
 
 type Store struct {
 	db *sql.DB
@@ -143,6 +146,96 @@ func (s *Store) migrate(ctx context.Context) error {
 			telegram_enabled INTEGER NOT NULL DEFAULT 0,
 			telegram_bot_token TEXT NOT NULL DEFAULT '',
 			telegram_chat_id TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			root_path TEXT NOT NULL UNIQUE,
+			enabled INTEGER NOT NULL,
+			ignore_policy TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_devices (
+			id TEXT PRIMARY KEY,
+			helper_id TEXT NOT NULL DEFAULT '',
+			machine_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			platform TEXT NOT NULL,
+			ssd_volume_uuid TEXT NOT NULL,
+			last_connection_mode TEXT NOT NULL DEFAULT '',
+			paired_at DATETIME NOT NULL,
+			last_seen_at DATETIME,
+			UNIQUE(machine_id, ssd_volume_uuid)
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_device_leases (
+			ssd_volume_uuid TEXT PRIMARY KEY,
+			device_id TEXT NOT NULL,
+			token TEXT NOT NULL,
+			expires_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			FOREIGN KEY(device_id) REFERENCES sync_devices(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_items (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			parent_id TEXT NOT NULL,
+			relative_path TEXT NOT NULL,
+			name TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			mod_time DATETIME,
+			content_hash TEXT NOT NULL,
+			metadata_hash TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			tombstoned INTEGER NOT NULL,
+			dirty INTEGER NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			UNIQUE(project_id, relative_path),
+			FOREIGN KEY(project_id) REFERENCES sync_projects(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_revisions (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			item_id TEXT NOT NULL,
+			device_id TEXT NOT NULL DEFAULT '',
+			base_revision INTEGER NOT NULL,
+			revision INTEGER NOT NULL,
+			operation TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			metadata_hash TEXT NOT NULL,
+			details TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			FOREIGN KEY(project_id) REFERENCES sync_projects(id) ON DELETE CASCADE,
+			FOREIGN KEY(item_id) REFERENCES sync_items(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_conflicts (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			item_id TEXT NOT NULL,
+			base_revision INTEGER NOT NULL,
+			nas_revision INTEGER NOT NULL,
+			ssd_revision INTEGER NOT NULL,
+			fields TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			resolved_at DATETIME,
+			FOREIGN KEY(project_id) REFERENCES sync_projects(id) ON DELETE CASCADE,
+			FOREIGN KEY(item_id) REFERENCES sync_items(id) ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS sync_pins (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			item_id TEXT NOT NULL,
+			device_id TEXT NOT NULL,
+			mode TEXT NOT NULL,
+			recursive INTEGER NOT NULL,
+			created_at DATETIME NOT NULL,
+			UNIQUE(project_id, item_id, device_id),
+			FOREIGN KEY(project_id) REFERENCES sync_projects(id) ON DELETE CASCADE,
+			FOREIGN KEY(item_id) REFERENCES sync_items(id) ON DELETE CASCADE,
+			FOREIGN KEY(device_id) REFERENCES sync_devices(id) ON DELETE CASCADE
 		);`,
 	}
 
@@ -735,9 +828,494 @@ func (s *Store) ExportSnapshot(ctx context.Context) (map[string]any, error) {
 	}, nil
 }
 
+func (s *Store) CreateSyncProject(ctx context.Context, project models.SyncProject) (*models.SyncProject, error) {
+	now := time.Now().UTC()
+	if project.ID == "" {
+		project.ID = uuid.NewString()
+	}
+	if project.CreatedAt.IsZero() {
+		project.CreatedAt = now
+	}
+	project.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sync_projects (id, name, root_path, enabled, ignore_policy, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(root_path) DO UPDATE SET
+			name = excluded.name,
+			enabled = excluded.enabled,
+			ignore_policy = excluded.ignore_policy,
+			updated_at = excluded.updated_at;
+	`, project.ID, project.Name, project.RootPath, boolToInt(project.Enabled), project.IgnorePolicy, project.CreatedAt, project.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetSyncProjectByRootPath(ctx, project.RootPath)
+}
+
+func (s *Store) GetSyncProject(ctx context.Context, id string) (*models.SyncProject, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, root_path, enabled, ignore_policy, created_at, updated_at
+		FROM sync_projects WHERE id = ?;
+	`, id)
+	return scanSyncProject(row.Scan)
+}
+
+func (s *Store) GetSyncProjectByRootPath(ctx context.Context, rootPath string) (*models.SyncProject, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, root_path, enabled, ignore_policy, created_at, updated_at
+		FROM sync_projects WHERE root_path = ?;
+	`, rootPath)
+	return scanSyncProject(row.Scan)
+}
+
+func (s *Store) ListSyncProjects(ctx context.Context) ([]models.SyncProject, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, root_path, enabled, ignore_policy, created_at, updated_at
+		FROM sync_projects ORDER BY name;
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []models.SyncProject
+	for rows.Next() {
+		project, err := scanSyncProject(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		projects = append(projects, *project)
+	}
+	return projects, rows.Err()
+}
+
+func scanSyncProject(scan func(dest ...any) error) (*models.SyncProject, error) {
+	var project models.SyncProject
+	var enabled int
+	if err := scan(&project.ID, &project.Name, &project.RootPath, &enabled, &project.IgnorePolicy, &project.CreatedAt, &project.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	project.Enabled = intToBool(enabled)
+	return &project, nil
+}
+
+func (s *Store) CreateSyncDevice(ctx context.Context, device models.SyncDevice) (*models.SyncDevice, error) {
+	now := time.Now().UTC()
+	if device.ID == "" {
+		device.ID = uuid.NewString()
+	}
+	if device.PairedAt.IsZero() {
+		device.PairedAt = now
+	}
+	device.LastSeenAt = &now
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sync_devices (
+			id, helper_id, machine_id, name, platform, ssd_volume_uuid, last_connection_mode, paired_at, last_seen_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(machine_id, ssd_volume_uuid) DO UPDATE SET
+			helper_id = excluded.helper_id,
+			name = excluded.name,
+			platform = excluded.platform,
+			last_connection_mode = excluded.last_connection_mode,
+			last_seen_at = excluded.last_seen_at;
+	`, device.ID, device.HelperID, device.MachineID, device.Name, device.Platform, device.SSDVolumeUUID, device.LastConnectionMode, device.PairedAt, now)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetSyncDeviceByMachineAndVolume(ctx, device.MachineID, device.SSDVolumeUUID)
+}
+
+func (s *Store) GetSyncDevice(ctx context.Context, id string) (*models.SyncDevice, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, helper_id, machine_id, name, platform, ssd_volume_uuid, last_connection_mode, paired_at, last_seen_at
+		FROM sync_devices WHERE id = ?;
+	`, id)
+	return scanSyncDevice(row.Scan)
+}
+
+func (s *Store) GetSyncDeviceByMachineAndVolume(ctx context.Context, machineID, volumeUUID string) (*models.SyncDevice, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, helper_id, machine_id, name, platform, ssd_volume_uuid, last_connection_mode, paired_at, last_seen_at
+		FROM sync_devices WHERE machine_id = ? AND ssd_volume_uuid = ?;
+	`, machineID, volumeUUID)
+	return scanSyncDevice(row.Scan)
+}
+
+func (s *Store) ListSyncDevices(ctx context.Context) ([]models.SyncDevice, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, helper_id, machine_id, name, platform, ssd_volume_uuid, last_connection_mode, paired_at, last_seen_at
+		FROM sync_devices ORDER BY name;
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var devices []models.SyncDevice
+	for rows.Next() {
+		device, err := scanSyncDevice(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, *device)
+	}
+	return devices, rows.Err()
+}
+
+func scanSyncDevice(scan func(dest ...any) error) (*models.SyncDevice, error) {
+	var device models.SyncDevice
+	var lastSeen sql.NullTime
+	if err := scan(
+		&device.ID,
+		&device.HelperID,
+		&device.MachineID,
+		&device.Name,
+		&device.Platform,
+		&device.SSDVolumeUUID,
+		&device.LastConnectionMode,
+		&device.PairedAt,
+		&lastSeen,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	device.LastSeenAt = nullTimePtr(lastSeen)
+	return &device, nil
+}
+
+func (s *Store) AcquireSyncLease(ctx context.Context, deviceID, volumeUUID string, ttl time.Duration, force bool) (*models.SyncLease, error) {
+	now := time.Now().UTC()
+	var current models.SyncLease
+	err := s.db.QueryRowContext(ctx, `
+		SELECT ssd_volume_uuid, device_id, token, expires_at, updated_at
+		FROM sync_device_leases WHERE ssd_volume_uuid = ?;
+	`, volumeUUID).Scan(&current.SSDVolumeUUID, &current.DeviceID, &current.Token, &current.ExpiresAt, &current.UpdatedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if err == nil && current.DeviceID != deviceID && current.ExpiresAt.After(now) && !force {
+		return &current, ErrLeaseHeld
+	}
+
+	lease := models.SyncLease{
+		SSDVolumeUUID: volumeUUID,
+		DeviceID:      deviceID,
+		Token:         uuid.NewString(),
+		ExpiresAt:     now.Add(ttl),
+		UpdatedAt:     now,
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO sync_device_leases (ssd_volume_uuid, device_id, token, expires_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(ssd_volume_uuid) DO UPDATE SET
+			device_id = excluded.device_id,
+			token = excluded.token,
+			expires_at = excluded.expires_at,
+			updated_at = excluded.updated_at;
+	`, lease.SSDVolumeUUID, lease.DeviceID, lease.Token, lease.ExpiresAt, lease.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &lease, nil
+}
+
+func (s *Store) UpsertSyncItem(ctx context.Context, item models.SyncItem) (*models.SyncItem, error) {
+	now := time.Now().UTC()
+	if item.ID == "" {
+		item.ID = uuid.NewString()
+	}
+	if item.ParentID == "" {
+		item.ParentID = "root"
+	}
+	if item.Kind == "" {
+		item.Kind = models.SyncItemKindFile
+	}
+	if item.Revision <= 0 {
+		item.Revision = 1
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+
+	var modTime any
+	if item.ModTime != nil {
+		modTime = *item.ModTime
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sync_items (
+			id, project_id, parent_id, relative_path, name, kind, size, mod_time, content_hash, metadata_hash,
+			revision, tombstoned, dirty, created_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(project_id, relative_path) DO UPDATE SET
+			parent_id = excluded.parent_id,
+			name = excluded.name,
+			kind = excluded.kind,
+			size = excluded.size,
+			mod_time = excluded.mod_time,
+			content_hash = excluded.content_hash,
+			metadata_hash = excluded.metadata_hash,
+			revision = excluded.revision,
+			tombstoned = excluded.tombstoned,
+			dirty = excluded.dirty,
+			updated_at = excluded.updated_at;
+	`, item.ID, item.ProjectID, item.ParentID, item.RelativePath, item.Name, item.Kind, item.Size, modTime, item.ContentHash, item.MetadataHash,
+		item.Revision, boolToInt(item.Tombstoned), boolToInt(item.Dirty), item.CreatedAt, item.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetSyncItemByProjectPath(ctx, item.ProjectID, item.RelativePath)
+}
+
+func (s *Store) GetSyncItem(ctx context.Context, id string) (*models.SyncItem, error) {
+	row := s.db.QueryRowContext(ctx, syncItemSelect()+` WHERE id = ?;`, id)
+	return scanSyncItem(row.Scan)
+}
+
+func (s *Store) GetSyncItemByProjectPath(ctx context.Context, projectID, relativePath string) (*models.SyncItem, error) {
+	row := s.db.QueryRowContext(ctx, syncItemSelect()+` WHERE project_id = ? AND relative_path = ?;`, projectID, relativePath)
+	return scanSyncItem(row.Scan)
+}
+
+func (s *Store) ListSyncItems(ctx context.Context, projectID, parentID string) ([]models.SyncItem, error) {
+	if parentID == "" {
+		parentID = "root"
+	}
+	rows, err := s.db.QueryContext(ctx, syncItemSelect()+`
+		WHERE project_id = ? AND parent_id = ?
+		ORDER BY kind = 'file', lower(name);
+	`, projectID, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.SyncItem
+	for rows.Next() {
+		item, err := scanSyncItem(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
+func syncItemSelect() string {
+	return `SELECT id, project_id, parent_id, relative_path, name, kind, size, mod_time, content_hash, metadata_hash,
+		revision, tombstoned, dirty, created_at, updated_at FROM sync_items`
+}
+
+func scanSyncItem(scan func(dest ...any) error) (*models.SyncItem, error) {
+	var item models.SyncItem
+	var modTime sql.NullTime
+	var tombstoned, dirty int
+	if err := scan(
+		&item.ID,
+		&item.ProjectID,
+		&item.ParentID,
+		&item.RelativePath,
+		&item.Name,
+		&item.Kind,
+		&item.Size,
+		&modTime,
+		&item.ContentHash,
+		&item.MetadataHash,
+		&item.Revision,
+		&tombstoned,
+		&dirty,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	item.ModTime = nullTimePtr(modTime)
+	item.Tombstoned = intToBool(tombstoned)
+	item.Dirty = intToBool(dirty)
+	return &item, nil
+}
+
+func (s *Store) AppendSyncRevision(ctx context.Context, revision models.SyncRevision) (*models.SyncRevision, error) {
+	if revision.ID == "" {
+		revision.ID = uuid.NewString()
+	}
+	if revision.CreatedAt.IsZero() {
+		revision.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sync_revisions (
+			id, project_id, item_id, device_id, base_revision, revision, operation, content_hash, metadata_hash, details, created_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+	`, revision.ID, revision.ProjectID, revision.ItemID, revision.DeviceID, revision.BaseRevision, revision.Revision,
+		revision.Operation, revision.ContentHash, revision.MetadataHash, revision.Details, revision.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &revision, nil
+}
+
+func (s *Store) CreateSyncConflict(ctx context.Context, conflict models.SyncConflict) (*models.SyncConflict, error) {
+	if conflict.ID == "" {
+		conflict.ID = uuid.NewString()
+	}
+	if conflict.Status == "" {
+		conflict.Status = models.SyncConflictStatusOpen
+	}
+	if conflict.CreatedAt.IsZero() {
+		conflict.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sync_conflicts (
+			id, project_id, item_id, base_revision, nas_revision, ssd_revision, fields, status, created_at, resolved_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+	`, conflict.ID, conflict.ProjectID, conflict.ItemID, conflict.BaseRevision, conflict.NASRevision, conflict.SSDRevision,
+		conflict.Fields, conflict.Status, conflict.CreatedAt, conflict.ResolvedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &conflict, nil
+}
+
+func (s *Store) ListSyncConflicts(ctx context.Context, status string) ([]models.SyncConflict, error) {
+	query := `
+		SELECT id, project_id, item_id, base_revision, nas_revision, ssd_revision, fields, status, created_at, resolved_at
+		FROM sync_conflicts`
+	args := []any{}
+	if status != "" {
+		query += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC;`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var conflicts []models.SyncConflict
+	for rows.Next() {
+		var conflict models.SyncConflict
+		var resolved sql.NullTime
+		if err := rows.Scan(&conflict.ID, &conflict.ProjectID, &conflict.ItemID, &conflict.BaseRevision, &conflict.NASRevision,
+			&conflict.SSDRevision, &conflict.Fields, &conflict.Status, &conflict.CreatedAt, &resolved); err != nil {
+			return nil, err
+		}
+		conflict.ResolvedAt = nullTimePtr(resolved)
+		conflicts = append(conflicts, conflict)
+	}
+	return conflicts, rows.Err()
+}
+
+func (s *Store) ResolveSyncConflict(ctx context.Context, conflictID string) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sync_conflicts
+		SET status = ?, resolved_at = ?
+		WHERE id = ?;
+	`, models.SyncConflictStatusResolved, time.Now().UTC(), conflictID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpsertSyncPin(ctx context.Context, pin models.SyncPin) (*models.SyncPin, error) {
+	if pin.ID == "" {
+		pin.ID = uuid.NewString()
+	}
+	if pin.Mode == "" {
+		pin.Mode = models.SyncPinModeKeepDownloaded
+	}
+	if pin.CreatedAt.IsZero() {
+		pin.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sync_pins (id, project_id, item_id, device_id, mode, recursive, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(project_id, item_id, device_id) DO UPDATE SET
+			mode = excluded.mode,
+			recursive = excluded.recursive;
+	`, pin.ID, pin.ProjectID, pin.ItemID, pin.DeviceID, pin.Mode, boolToInt(pin.Recursive), pin.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.ListSyncPins(ctx, pin.ProjectID, pin.DeviceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if row.ItemID == pin.ItemID {
+			return &row, nil
+		}
+	}
+	return &pin, nil
+}
+
+func (s *Store) ListSyncPins(ctx context.Context, projectID, deviceID string) ([]models.SyncPin, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, project_id, item_id, device_id, mode, recursive, created_at
+		FROM sync_pins
+		WHERE project_id = ? AND device_id = ?
+		ORDER BY created_at DESC;
+	`, projectID, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pins []models.SyncPin
+	for rows.Next() {
+		var pin models.SyncPin
+		var recursive int
+		if err := rows.Scan(&pin.ID, &pin.ProjectID, &pin.ItemID, &pin.DeviceID, &pin.Mode, &recursive, &pin.CreatedAt); err != nil {
+			return nil, err
+		}
+		pin.Recursive = intToBool(recursive)
+		pins = append(pins, pin)
+	}
+	return pins, rows.Err()
+}
+
+func (s *Store) DeleteSyncPin(ctx context.Context, pinID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM sync_pins WHERE id = ?;`, pinID)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func boolToInt(v bool) int {
 	if v {
 		return 1
 	}
 	return 0
+}
+
+func intToBool(v int) bool {
+	return v != 0
 }

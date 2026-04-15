@@ -15,6 +15,7 @@
   - job queue with pause/resume/cancel
   - export and notification settings endpoints
 - Go helper agent for `macOS` and `Windows` style pairing flow
+- Sync foundation with project catalog, Mac/SSD lease tracking, pins, conflicts, and chunked upload sessions
 - React/Vite dashboard shell with pages for:
   - setup/login
   - dashboard
@@ -23,10 +24,13 @@
   - helpers
   - jobs
   - settings/audit
+- Separate native macOS helper scaffold in `macos-helper/` for the future File Provider app and extensions
 
 ## Current limitation
 
 Remote helper file transfer is not wired into ingest execution yet. Helper pairing and helper browsing are implemented; ingest execution currently accepts NAS-local sources only.
+
+The File Provider helper in `macos-helper/` is a source scaffold for Xcode on macOS. It includes app, File Provider extension, File Provider UI extension, shared Swift code, entitlements/templates, and `AGENTS.md` requirements, but it has not been built in this Windows/NAS-mounted workspace.
 
 ## Local development
 

@@ -21,6 +21,14 @@ const (
 
 	SourceTypeLocal  = "local"
 	SourceTypeHelper = "helper"
+
+	SyncItemKindFile      = "file"
+	SyncItemKindDirectory = "directory"
+
+	SyncPinModeKeepDownloaded = "keep_downloaded"
+
+	SyncConflictStatusOpen     = "open"
+	SyncConflictStatusResolved = "resolved"
 )
 
 type User struct {
@@ -215,5 +223,90 @@ type AuditEntry struct {
 	Actor     string    `json:"actor"`
 	Target    string    `json:"target"`
 	Details   string    `json:"details"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type SyncProject struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	RootPath     string    `json:"rootPath"`
+	Enabled      bool      `json:"enabled"`
+	IgnorePolicy string    `json:"ignorePolicy"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type SyncDevice struct {
+	ID                 string     `json:"id"`
+	HelperID           string     `json:"helperId,omitempty"`
+	MachineID          string     `json:"machineId"`
+	Name               string     `json:"name"`
+	Platform           string     `json:"platform"`
+	SSDVolumeUUID      string     `json:"ssdVolumeUuid"`
+	LastConnectionMode string     `json:"lastConnectionMode,omitempty"`
+	PairedAt           time.Time  `json:"pairedAt"`
+	LastSeenAt         *time.Time `json:"lastSeenAt,omitempty"`
+}
+
+type SyncLease struct {
+	SSDVolumeUUID string    `json:"ssdVolumeUuid"`
+	DeviceID      string    `json:"deviceId"`
+	Token         string    `json:"token"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type SyncItem struct {
+	ID           string     `json:"id"`
+	ProjectID    string     `json:"projectId"`
+	ParentID     string     `json:"parentId"`
+	RelativePath string     `json:"relativePath"`
+	Name         string     `json:"name"`
+	Kind         string     `json:"kind"`
+	Size         int64      `json:"size"`
+	ModTime      *time.Time `json:"modTime,omitempty"`
+	ContentHash  string     `json:"contentHash"`
+	MetadataHash string     `json:"metadataHash"`
+	Revision     int64      `json:"revision"`
+	Tombstoned   bool       `json:"tombstoned"`
+	Dirty        bool       `json:"dirty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+}
+
+type SyncRevision struct {
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"projectId"`
+	ItemID       string    `json:"itemId"`
+	DeviceID     string    `json:"deviceId,omitempty"`
+	BaseRevision int64     `json:"baseRevision"`
+	Revision     int64     `json:"revision"`
+	Operation    string    `json:"operation"`
+	ContentHash  string    `json:"contentHash"`
+	MetadataHash string    `json:"metadataHash"`
+	Details      string    `json:"details"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type SyncConflict struct {
+	ID           string     `json:"id"`
+	ProjectID    string     `json:"projectId"`
+	ItemID       string     `json:"itemId"`
+	BaseRevision int64      `json:"baseRevision"`
+	NASRevision  int64      `json:"nasRevision"`
+	SSDRevision  int64      `json:"ssdRevision"`
+	Fields       string     `json:"fields"`
+	Status       string     `json:"status"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	ResolvedAt   *time.Time `json:"resolvedAt,omitempty"`
+}
+
+type SyncPin struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"projectId"`
+	ItemID    string    `json:"itemId"`
+	DeviceID  string    `json:"deviceId"`
+	Mode      string    `json:"mode"`
+	Recursive bool      `json:"recursive"`
 	CreatedAt time.Time `json:"createdAt"`
 }
