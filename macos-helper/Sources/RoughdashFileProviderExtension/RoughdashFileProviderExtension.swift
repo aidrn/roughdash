@@ -95,9 +95,61 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
-        // Local creates are uploaded only after a lease is held and the NAS base revision is checked.
-        completionHandler(nil, fields, false, NSFileProviderError(.serverUnreachable))
-        progress.completedUnitCount = 1
+        let creation = FileProviderItemModification(progress: progress, completionHandler: completionHandler)
+        let filename = itemTemplate.filename
+        let parentIdentifier = itemTemplate.parentItemIdentifier
+
+        Task {
+            do {
+                var snapshot = RoughdashExtensionStorage.readSnapshot(for: domain)
+                guard let contentURL = url else {
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
+                var isDirectory = ObjCBool(false)
+                guard FileManager.default.fileExists(atPath: contentURL.path, isDirectory: &isDirectory),
+                      !isDirectory.boolValue else {
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
+                guard let serverURL = URL(string: snapshot.serverURL),
+                      !snapshot.helperID.isEmpty,
+                      let helperToken = snapshot.helperToken,
+                      !helperToken.isEmpty else {
+                    throw NSFileProviderError(.notAuthenticated)
+                }
+
+                let parent = try Self.uploadParentContext(
+                    for: parentIdentifier,
+                    filename: filename,
+                    snapshot: snapshot
+                )
+                let didAccess = contentURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess {
+                        contentURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                let api = RoughdashAPIClient(baseURL: serverURL, helperID: snapshot.helperID, helperToken: helperToken)
+                let upload = try await SyncUploadCoordinator(api: api).uploadNewFile(
+                    snapshot: snapshot,
+                    projectID: parent.projectID,
+                    parentID: parent.parentID,
+                    relativePath: parent.relativePath,
+                    fileURL: contentURL
+                )
+                snapshot.syncDevice = upload.device
+                snapshot.items.append(upload.completed.item)
+                snapshot.updatedAt = Date()
+                try RoughdashExtensionStorage.writeSnapshot(snapshot, for: domain)
+                await signalWorkingSetChanged()
+
+                logger.info("Created File Provider item \(upload.completed.item.id, privacy: .public) at \(upload.completed.item.relativePath, privacy: .public)")
+                creation.complete(RoughdashProviderItem(item: upload.completed.item), [], false, nil)
+            } catch {
+                logger.error("Could not create File Provider item \(filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                creation.complete(nil, fields, false, Self.fileProviderError(for: error))
+            }
+        }
         return progress
     }
 
@@ -228,6 +280,35 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         }
     }
 
+    private static func uploadParentContext(
+        for parentIdentifier: NSFileProviderItemIdentifier,
+        filename: String,
+        snapshot: HelperSnapshot
+    ) throws -> UploadParentContext {
+        let cleanName = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanName.contains("/") else {
+            throw NSFileProviderError(.cannotSynchronize)
+        }
+
+        if let projectID = RoughdashFileProviderIdentifiers.projectID(from: parentIdentifier),
+           snapshot.projects.contains(where: { $0.id == projectID && $0.enabled }) {
+            return UploadParentContext(
+                projectID: projectID,
+                parentID: "root",
+                relativePath: cleanName
+            )
+        }
+
+        guard let parent = snapshot.items.first(where: { $0.id == parentIdentifier.rawValue && $0.kind == "directory" && !$0.tombstoned }) else {
+            throw NSFileProviderError(.noSuchItem)
+        }
+        return UploadParentContext(
+            projectID: parent.projectId,
+            parentID: parent.id,
+            relativePath: "\(parent.relativePath)/\(cleanName)"
+        )
+    }
+
     private func signalWorkingSetChanged() async {
         guard let manager = NSFileProviderManager(for: domain) else {
             return
@@ -302,6 +383,12 @@ private final class FileProviderItemModification: @unchecked Sendable {
         progress.completedUnitCount = 1
         completionHandler(item, remainingFields, shouldFetchContent, error)
     }
+}
+
+private struct UploadParentContext: Sendable {
+    var projectID: String
+    var parentID: String
+    var relativePath: String
 }
 
 private enum HydrationError: Error, LocalizedError {

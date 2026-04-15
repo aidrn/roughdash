@@ -3,13 +3,15 @@ import SwiftUI
 
 struct ConflictsView: View {
     let conflicts: [SyncConflict]
+    let items: [SyncItem]
+    let projects: [SyncProject]
 
     var body: some View {
         List(conflicts) { conflict in
             VStack(alignment: .leading, spacing: 4) {
-                Text(conflict.fields)
+                Text(title(for: conflict))
                     .font(.headline)
-                Text("NAS revision \(conflict.nasRevision), SSD revision \(conflict.ssdRevision)")
+                Text("\(conflict.fields): NAS revision \(conflict.nasRevision), SSD revision \(conflict.ssdRevision)")
                     .foregroundStyle(.secondary)
                 Text(conflict.createdAt.formatted())
                     .font(.caption)
@@ -18,5 +20,16 @@ struct ConflictsView: View {
             .padding(.vertical, 4)
         }
         .navigationTitle("Conflicts")
+    }
+
+    private func title(for conflict: SyncConflict) -> String {
+        guard let item = items.first(where: { $0.id == conflict.itemId }) else {
+            return "Unknown sync item"
+        }
+        let projectName = projects.first(where: { $0.id == conflict.projectId })?.name
+        if let projectName {
+            return "\(projectName)/\(item.relativePath)"
+        }
+        return item.relativePath
     }
 }

@@ -7,7 +7,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(selection: $selection, conflictCount: state.conflicts.count)
+            SidebarView(selection: $selection, conflictCount: state.visibleConflicts.count)
         } detail: {
             switch selection {
             case .setup:
@@ -15,7 +15,7 @@ struct ContentView: View {
             case .projects:
                 ProjectsView(projects: state.projects)
             case .conflicts:
-                ConflictsView(conflicts: state.conflicts)
+                ConflictsView(conflicts: state.visibleConflicts, items: state.items, projects: state.projects)
             case .transfers:
                 TransfersView(connectionMode: state.connectionMode, statusMessage: state.statusMessage)
             }

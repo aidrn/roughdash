@@ -164,6 +164,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sync/projects", s.syncAccessRequired(s.handleSyncProjectsCreate))
 	mux.HandleFunc("GET /api/sync/projects/{id}/items", s.syncAccessRequired(s.handleSyncItemsList))
 	mux.HandleFunc("PUT /api/sync/projects/{id}/items", s.syncAccessRequired(s.handleSyncItemUpsert))
+	mux.HandleFunc("POST /api/sync/projects/{id}/scan", s.syncAccessRequired(s.handleSyncProjectScan))
 	mux.HandleFunc("GET /api/sync/projects/{id}/items/{itemID}/content", s.syncAccessRequired(s.handleSyncItemContent))
 	mux.HandleFunc("GET /api/sync/devices", s.syncAccessRequired(s.handleSyncDevicesList))
 	mux.HandleFunc("POST /api/sync/devices", s.syncAccessRequired(s.handleSyncDevicesCreate))

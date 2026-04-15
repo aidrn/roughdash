@@ -2,14 +2,18 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -150,6 +154,15 @@ func (s *Server) handleSyncItemsList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, statusForStoreError(err), err)
 		return
 	}
+	if r.URL.Query().Get("recursive") == "true" {
+		items, err := s.store.ListAllSyncItems(r.Context(), projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		return
+	}
 	parentID := strings.TrimSpace(r.URL.Query().Get("parentId"))
 	items, err := s.store.ListSyncItems(r.Context(), projectID, parentID)
 	if err != nil {
@@ -206,6 +219,24 @@ func (s *Server) handleSyncItemUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": saved})
+}
+
+func (s *Server) handleSyncProjectScan(w http.ResponseWriter, r *http.Request) {
+	project, err := s.store.GetSyncProject(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusForStoreError(err), err)
+		return
+	}
+	if !project.Enabled {
+		writeError(w, http.StatusBadRequest, errors.New("sync project is disabled"))
+		return
+	}
+	result, err := s.scanSyncProject(r.Context(), project)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleSyncItemContent(w http.ResponseWriter, r *http.Request) {
@@ -471,6 +502,211 @@ func (s *Server) handleSyncConflictsList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"conflicts": conflicts})
+}
+
+type syncProjectScanResult struct {
+	Items   []models.SyncItem `json:"items"`
+	Created int               `json:"created"`
+	Updated int               `json:"updated"`
+	Skipped int               `json:"skipped"`
+}
+
+type syncScanCandidate struct {
+	RelativePath string
+	Name         string
+	Kind         string
+	Size         int64
+	ModTime      *time.Time
+	ContentHash  string
+	MetadataHash string
+}
+
+func (s *Server) scanSyncProject(ctx context.Context, project *models.SyncProject) (*syncProjectScanResult, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(project.RootPath)
+	if err != nil {
+		return nil, err
+	}
+	resolvedNASRoot, err := filepath.EvalSymlinks(s.cfg.NASRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := system.EnsureWithinRoot(resolvedNASRoot, resolvedRoot); err != nil {
+		return nil, err
+	}
+
+	existingItems, err := s.store.ListAllSyncItems(ctx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	existingByPath := make(map[string]models.SyncItem, len(existingItems))
+	for _, item := range existingItems {
+		existingByPath[item.RelativePath] = item
+	}
+
+	result := &syncProjectScanResult{}
+	candidates := []syncScanCandidate{}
+	if err := filepath.WalkDir(resolvedRoot, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if current == resolvedRoot {
+			return nil
+		}
+		relative, err := filepath.Rel(resolvedRoot, current)
+		if err != nil {
+			return err
+		}
+		relativePath, err := normalizeSyncRelativePath(filepath.ToSlash(relative))
+		if err != nil || relativePath == "" {
+			result.Skipped++
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if shouldIgnoreSyncCatalogPath(relativePath) {
+			result.Skipped++
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			result.Skipped++
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		modTime := info.ModTime().UTC()
+		candidate := syncScanCandidate{
+			RelativePath: relativePath,
+			Name:         path.Base(relativePath),
+			Kind:         models.SyncItemKindFile,
+			Size:         info.Size(),
+			ModTime:      &modTime,
+		}
+		if info.IsDir() {
+			candidate.Kind = models.SyncItemKindDirectory
+			candidate.Size = 0
+			candidate.ContentHash = "directory"
+			candidate.MetadataHash = "directory"
+		} else if info.Mode().IsRegular() {
+			hash, err := fileSHA256Hex(current)
+			if err != nil {
+				return err
+			}
+			candidate.ContentHash = hash
+			candidate.MetadataHash = syncMetadataHash(candidate.Size, hash)
+		} else {
+			result.Skipped++
+			return nil
+		}
+		candidates = append(candidates, candidate)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		iDepth := strings.Count(candidates[i].RelativePath, "/")
+		jDepth := strings.Count(candidates[j].RelativePath, "/")
+		if iDepth != jDepth {
+			return iDepth < jDepth
+		}
+		if candidates[i].Kind != candidates[j].Kind {
+			return candidates[i].Kind == models.SyncItemKindDirectory
+		}
+		return candidates[i].RelativePath < candidates[j].RelativePath
+	})
+
+	parentIDByPath := map[string]string{"": "root"}
+	for _, item := range existingItems {
+		if item.Kind == models.SyncItemKindDirectory && !item.Tombstoned {
+			parentIDByPath[item.RelativePath] = item.ID
+		}
+	}
+
+	for _, candidate := range candidates {
+		parentPath := path.Dir(candidate.RelativePath)
+		if parentPath == "." {
+			parentPath = ""
+		}
+		parentID := parentIDByPath[parentPath]
+		if parentID == "" {
+			parentID = "root"
+		}
+
+		existing, exists := existingByPath[candidate.RelativePath]
+		item := models.SyncItem{
+			ProjectID:    project.ID,
+			ParentID:     parentID,
+			RelativePath: candidate.RelativePath,
+			Name:         candidate.Name,
+			Kind:         candidate.Kind,
+			Size:         candidate.Size,
+			ModTime:      candidate.ModTime,
+			ContentHash:  candidate.ContentHash,
+			MetadataHash: candidate.MetadataHash,
+			Revision:     1,
+		}
+
+		changed := !exists
+		if exists {
+			item.ID = existing.ID
+			item.Revision = existing.Revision
+			changed = existing.Tombstoned ||
+				existing.ParentID != item.ParentID ||
+				existing.Name != item.Name ||
+				existing.Kind != item.Kind ||
+				existing.Size != item.Size ||
+				existing.ContentHash != item.ContentHash ||
+				existing.MetadataHash != item.MetadataHash
+			if changed {
+				item.Revision = existing.Revision + 1
+			}
+		}
+
+		if changed {
+			saved, err := s.store.UpsertSyncItem(ctx, item)
+			if err != nil {
+				return nil, err
+			}
+			item = *saved
+			if exists {
+				result.Updated++
+			} else {
+				result.Created++
+			}
+			operation := models.SyncRevisionOperationUpload
+			if item.Kind == models.SyncItemKindDirectory {
+				operation = models.SyncRevisionOperationMetadata
+			}
+			if _, err := s.store.AppendSyncRevision(ctx, models.SyncRevision{
+				ProjectID:    item.ProjectID,
+				ItemID:       item.ID,
+				BaseRevision: item.Revision - 1,
+				Revision:     item.Revision,
+				Operation:    operation,
+				ContentHash:  item.ContentHash,
+				MetadataHash: item.MetadataHash,
+				Details:      syncRevisionDetails(item.RelativePath, item.Size),
+			}); err != nil {
+				return nil, err
+			}
+		}
+		if item.Kind == models.SyncItemKindDirectory {
+			parentIDByPath[item.RelativePath] = item.ID
+		}
+		result.Items = append(result.Items, item)
+	}
+
+	return result, nil
 }
 
 func (s *Server) handleSyncConflictsCreate(w http.ResponseWriter, r *http.Request) {
@@ -995,6 +1231,46 @@ func validSHA256(value string) bool {
 		}
 	}
 	return true
+}
+
+func fileSHA256Hex(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func shouldIgnoreSyncCatalogPath(relativePath string) bool {
+	name := path.Base(relativePath)
+	switch name {
+	case ".DS_Store", ".Spotlight-V100", ".Trashes", ".fseventsd", ".roughdash":
+		return true
+	}
+	if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".swp") {
+		return true
+	}
+	if strings.HasSuffix(name, ".swp") ||
+		strings.HasSuffix(name, ".swo") ||
+		strings.HasSuffix(name, ".tmp") ||
+		strings.HasSuffix(name, ".temp") ||
+		strings.HasSuffix(name, ".part") ||
+		strings.HasPrefix(name, "~$") {
+		return true
+	}
+	for _, segment := range strings.Split(relativePath, "/") {
+		switch segment {
+		case ".Spotlight-V100", ".Trashes", ".fseventsd", ".roughdash":
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) createSyncConflict(ctx context.Context, item *models.SyncItem, baseRevision, nasRevision, ssdRevision int64) (*models.SyncConflict, error) {

@@ -75,6 +75,40 @@ public struct SyncItem: Codable, Identifiable, Sendable {
     public var dirty: Bool
     public var createdAt: Date
     public var updatedAt: Date
+
+    public init(
+        id: String = "",
+        projectId: String,
+        parentId: String = "root",
+        relativePath: String,
+        name: String,
+        kind: String = "file",
+        size: Int64 = 0,
+        modTime: Date? = nil,
+        contentHash: String = "",
+        metadataHash: String = "",
+        revision: Int64 = 0,
+        tombstoned: Bool = false,
+        dirty: Bool = false,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.projectId = projectId
+        self.parentId = parentId
+        self.relativePath = relativePath
+        self.name = name
+        self.kind = kind
+        self.size = size
+        self.modTime = modTime
+        self.contentHash = contentHash
+        self.metadataHash = metadataHash
+        self.revision = revision
+        self.tombstoned = tombstoned
+        self.dirty = dirty
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
 }
 
 public struct SyncConflict: Codable, Identifiable, Sendable {
@@ -140,6 +174,13 @@ public struct CompletedTransfer: Sendable {
     public var path: String
     public var item: SyncItem
     public var revision: SyncRevision
+}
+
+public struct SyncProjectScanResult: Codable, Sendable {
+    public var items: [SyncItem]
+    public var created: Int
+    public var updated: Int
+    public var skipped: Int
 }
 
 public struct VolumeCheck: Sendable {

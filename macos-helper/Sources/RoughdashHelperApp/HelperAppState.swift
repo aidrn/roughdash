@@ -25,6 +25,21 @@ final class HelperAppState {
     var connectionMode: ConnectionMode = .lanDirect
     var statusMessage = "Pair with Roughdash and select a dedicated APFS encrypted SSD."
     var isBusy = false
+    var visibleConflicts: [SyncConflict] {
+        var seen = Set<String>()
+        return conflicts.filter { conflict in
+            let key = [
+                conflict.projectId,
+                conflict.itemId,
+                String(conflict.baseRevision),
+                String(conflict.nasRevision),
+                String(conflict.ssdRevision),
+                conflict.fields,
+                conflict.status
+            ].joined(separator: ":")
+            return seen.insert(key).inserted
+        }
+    }
 
     init() {
         loadPersistedState()
@@ -216,7 +231,11 @@ final class HelperAppState {
         let loadedProjects = try await api.listProjects()
         var loadedItems: [SyncItem] = []
         for project in loadedProjects where project.enabled {
-            if let rootItems = try? await api.listItems(projectID: project.id) {
+            if let scan = try? await api.scanProject(projectID: project.id) {
+                loadedItems.append(contentsOf: scan.items)
+            } else if let allItems = try? await api.listItems(projectID: project.id, recursive: true) {
+                loadedItems.append(contentsOf: allItems)
+            } else if let rootItems = try? await api.listItems(projectID: project.id) {
                 loadedItems.append(contentsOf: rootItems)
             }
         }

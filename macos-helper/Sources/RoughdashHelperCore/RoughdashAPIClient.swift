@@ -40,9 +40,14 @@ public actor RoughdashAPIClient {
         return response.lease
     }
 
-    public func listItems(projectID: String, parentID: String = "root") async throws -> [SyncItem] {
-        let response: ItemsResponse = try await request("GET", "/api/sync/projects/\(projectID)/items?parentId=\(parentID)")
+    public func listItems(projectID: String, parentID: String = "root", recursive: Bool = false) async throws -> [SyncItem] {
+        let query = recursive ? "recursive=true" : "parentId=\(parentID)"
+        let response: ItemsResponse = try await request("GET", "/api/sync/projects/\(projectID)/items?\(query)")
         return response.items
+    }
+
+    public func scanProject(projectID: String) async throws -> SyncProjectScanResult {
+        try await request("POST", "/api/sync/projects/\(projectID)/scan")
     }
 
     public func downloadItemContent(projectID: String, itemID: String) async throws -> DownloadedSyncItemContent {

@@ -1125,6 +1125,27 @@ func (s *Store) ListSyncItems(ctx context.Context, projectID, parentID string) (
 	return items, rows.Err()
 }
 
+func (s *Store) ListAllSyncItems(ctx context.Context, projectID string) ([]models.SyncItem, error) {
+	rows, err := s.db.QueryContext(ctx, syncItemSelect()+`
+		WHERE project_id = ?
+		ORDER BY relative_path;
+	`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.SyncItem
+	for rows.Next() {
+		item, err := scanSyncItem(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
 func syncItemSelect() string {
 	return `SELECT id, project_id, parent_id, relative_path, name, kind, size, mod_time, content_hash, metadata_hash,
 		revision, tombstoned, dirty, created_at, updated_at FROM sync_items`
@@ -1255,6 +1276,7 @@ func (s *Store) ListSyncConflicts(ctx context.Context, status string) ([]models.
 	defer rows.Close()
 
 	var conflicts []models.SyncConflict
+	seen := map[string]struct{}{}
 	for rows.Next() {
 		var conflict models.SyncConflict
 		var resolved sql.NullTime
@@ -1263,9 +1285,20 @@ func (s *Store) ListSyncConflicts(ctx context.Context, status string) ([]models.
 			return nil, err
 		}
 		conflict.ResolvedAt = nullTimePtr(resolved)
+		key := syncConflictKey(conflict)
+		if status == models.SyncConflictStatusOpen {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
 		conflicts = append(conflicts, conflict)
 	}
 	return conflicts, rows.Err()
+}
+
+func syncConflictKey(conflict models.SyncConflict) string {
+	return fmt.Sprintf("%s:%s:%d:%d:%d:%s:%s", conflict.ProjectID, conflict.ItemID, conflict.BaseRevision, conflict.NASRevision, conflict.SSDRevision, conflict.Fields, conflict.Status)
 }
 
 func (s *Store) ResolveSyncConflict(ctx context.Context, conflictID string) error {

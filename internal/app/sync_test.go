@@ -324,6 +324,97 @@ func TestSyncItemContentDownloadStreamsProjectFile(t *testing.T) {
 	}
 }
 
+func TestSyncProjectScanCatalogsDirectNASFiles(t *testing.T) {
+	server := newSyncTestServer(t)
+	handler := server.Handler()
+	ctx := context.Background()
+
+	helper, token := createSyncTestHelper(t, server, "scan-helper")
+	projectRoot := filepath.Join(server.cfg.NASRoot, "ScanProject")
+	if err := os.MkdirAll(filepath.Join(projectRoot, "Folder"), 0o755); err != nil {
+		t.Fatalf("mkdir project root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "Folder", "nas-drop.txt"), []byte("direct nas file\n"), 0o644); err != nil {
+		t.Fatalf("write nas file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".DS_Store"), []byte("junk"), 0o644); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+	project, err := server.store.CreateSyncProject(ctx, models.SyncProject{
+		Name:         "ScanProject",
+		RootPath:     projectRoot,
+		Enabled:      true,
+		IgnorePolicy: "default-system-junk",
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	response := doSyncJSON(t, handler, http.MethodPost, "/api/sync/projects/"+project.ID+"/scan", nil, helper.ID, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("scan project: got %d: %s", response.Code, response.Body.String())
+	}
+	var scan struct {
+		Items   []models.SyncItem `json:"items"`
+		Created int               `json:"created"`
+		Skipped int               `json:"skipped"`
+	}
+	decodeSyncResponse(t, response, &scan)
+	if scan.Created != 2 || scan.Skipped != 1 {
+		t.Fatalf("unexpected scan counts: %#v", scan)
+	}
+	var folder, file *models.SyncItem
+	for i := range scan.Items {
+		switch scan.Items[i].RelativePath {
+		case "Folder":
+			folder = &scan.Items[i]
+		case "Folder/nas-drop.txt":
+			file = &scan.Items[i]
+		case ".DS_Store":
+			t.Fatalf("ignored file was cataloged: %#v", scan.Items[i])
+		}
+	}
+	if folder == nil || file == nil {
+		t.Fatalf("expected folder and file in scan: %#v", scan.Items)
+	}
+	if file.ParentID != folder.ID || file.Revision != 1 {
+		t.Fatalf("unexpected scanned file metadata: folder=%#v file=%#v", folder, file)
+	}
+
+	if err := os.WriteFile(filepath.Join(projectRoot, "Folder", "nas-drop.txt"), []byte("direct nas file edited\n"), 0o644); err != nil {
+		t.Fatalf("edit nas file: %v", err)
+	}
+	response = doSyncJSON(t, handler, http.MethodPost, "/api/sync/projects/"+project.ID+"/scan", nil, helper.ID, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("rescan project: got %d: %s", response.Code, response.Body.String())
+	}
+	decodeSyncResponse(t, response, &scan)
+	for i := range scan.Items {
+		if scan.Items[i].RelativePath == "Folder/nas-drop.txt" {
+			file = &scan.Items[i]
+		}
+	}
+	if file == nil || file.Revision != 2 {
+		t.Fatalf("expected edited file revision 2, got %#v", file)
+	}
+
+	var listed struct {
+		Items []models.SyncItem `json:"items"`
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/sync/projects/"+project.ID+"/items?recursive=true", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listReq.Header.Set("X-Roughdash-Helper-ID", helper.ID)
+	listResp := httptest.NewRecorder()
+	handler.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list recursive: got %d: %s", listResp.Code, listResp.Body.String())
+	}
+	decodeSyncResponse(t, listResp, &listed)
+	if len(listed.Items) != len(scan.Items) {
+		t.Fatalf("recursive list did not return scanned items: got %#v want %#v", listed.Items, scan.Items)
+	}
+}
+
 func TestSyncItemContentDownloadRejectsInvalidCatalogItems(t *testing.T) {
 	server := newSyncTestServer(t)
 	handler := server.Handler()
