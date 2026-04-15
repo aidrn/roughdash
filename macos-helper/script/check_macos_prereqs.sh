@@ -57,5 +57,9 @@ check "volume is APFS" "File System Personality:[[:space:]]+APFS" || failed=1
 check "volume is encrypted" "Encrypted:[[:space:]]+Yes|FileVault:[[:space:]]+Yes" || failed=1
 check "volume is writable" "(Volume Read-Only|Read-Only Volume):[[:space:]]+No" || failed=1
 check "volume is external" "Device Location:[[:space:]]+External" || failed=1
+check "volume ownership is enabled" "Owners:[[:space:]]+Enabled" || {
+  echo "      Fix with: sudo diskutil enableOwnership \"$volume\""
+  failed=1
+}
 
 exit "$failed"

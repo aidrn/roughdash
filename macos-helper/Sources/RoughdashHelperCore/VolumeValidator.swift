@@ -34,6 +34,14 @@ public struct VolumeValidator {
         if !format.contains("apfs") {
             return VolumeCheck(url: url, volumeUUID: uuid, isSupported: false, reason: "The selected volume must be formatted as APFS.")
         }
+        if let ownershipEnabled = Self.globalPermissionsEnabled(at: url), !ownershipEnabled {
+            return VolumeCheck(
+                url: url,
+                volumeUUID: uuid,
+                isSupported: false,
+                reason: "The selected volume has file ownership disabled. Run `sudo diskutil enableOwnership \(url.path)` and register the Roughdash domain again."
+            )
+        }
         if #available(macOS 15.0, *) {
             switch try NSFileProviderManager.checkDomainsCanBeStoredOnVolume(at: url) {
             case .eligible:
@@ -55,5 +63,32 @@ public struct VolumeValidator {
             }
         }
         return VolumeCheck(url: url, volumeUUID: uuid, isSupported: true, reason: nil)
+    }
+
+    private static func globalPermissionsEnabled(at url: URL) -> Bool? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+        process.arguments = ["info", "-plist", url.path]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let values = plist as? [String: Any] else {
+            return nil
+        }
+        return values["GlobalPermissionsEnabled"] as? Bool
     }
 }
