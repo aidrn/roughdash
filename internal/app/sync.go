@@ -508,6 +508,7 @@ type syncProjectScanResult struct {
 	Items   []models.SyncItem `json:"items"`
 	Created int               `json:"created"`
 	Updated int               `json:"updated"`
+	Deleted int               `json:"deleted"`
 	Skipped int               `json:"skipped"`
 }
 
@@ -545,6 +546,7 @@ func (s *Server) scanSyncProject(ctx context.Context, project *models.SyncProjec
 
 	result := &syncProjectScanResult{}
 	candidates := []syncScanCandidate{}
+	seenPaths := map[string]struct{}{}
 	if err := filepath.WalkDir(resolvedRoot, func(current string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -607,6 +609,7 @@ func (s *Server) scanSyncProject(ctx context.Context, project *models.SyncProjec
 			result.Skipped++
 			return nil
 		}
+		seenPaths[relativePath] = struct{}{}
 		candidates = append(candidates, candidate)
 		return nil
 	}); err != nil {
@@ -704,6 +707,51 @@ func (s *Server) scanSyncProject(ctx context.Context, project *models.SyncProjec
 			parentIDByPath[item.RelativePath] = item.ID
 		}
 		result.Items = append(result.Items, item)
+	}
+
+	deletedItems := make([]models.SyncItem, 0)
+	for _, existing := range existingItems {
+		if existing.Tombstoned {
+			continue
+		}
+		if _, ok := seenPaths[existing.RelativePath]; ok {
+			continue
+		}
+		deletedItems = append(deletedItems, existing)
+	}
+	sort.Slice(deletedItems, func(i, j int) bool {
+		iDepth := strings.Count(deletedItems[i].RelativePath, "/")
+		jDepth := strings.Count(deletedItems[j].RelativePath, "/")
+		if iDepth != jDepth {
+			return iDepth > jDepth
+		}
+		return deletedItems[i].RelativePath < deletedItems[j].RelativePath
+	})
+	for _, existing := range deletedItems {
+		baseRevision := existing.Revision
+		existing.Revision++
+		existing.Tombstoned = true
+		existing.Dirty = false
+		existing.ContentHash = "deleted"
+		existing.MetadataHash = "deleted"
+		saved, err := s.store.UpsertSyncItem(ctx, existing)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.store.AppendSyncRevision(ctx, models.SyncRevision{
+			ProjectID:    saved.ProjectID,
+			ItemID:       saved.ID,
+			BaseRevision: baseRevision,
+			Revision:     saved.Revision,
+			Operation:    models.SyncRevisionOperationDelete,
+			ContentHash:  saved.ContentHash,
+			MetadataHash: saved.MetadataHash,
+			Details:      syncRevisionDetails(saved.RelativePath, saved.Size),
+		}); err != nil {
+			return nil, err
+		}
+		result.Deleted++
+		result.Items = append(result.Items, *saved)
 	}
 
 	return result, nil

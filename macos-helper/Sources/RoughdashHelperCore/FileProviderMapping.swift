@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
     private let item: SyncItem
+    private static let allowsEvictingCapability = NSFileProviderItemCapabilities(rawValue: 1 << 6)
 
     public init(item: SyncItem) {
         self.item = item
@@ -41,7 +42,31 @@ public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
     }
 
     public var capabilities: NSFileProviderItemCapabilities {
-        item.tombstoned ? [] : [.allowsReading, .allowsWriting, .allowsDeleting, .allowsReparenting, .allowsRenaming]
+        guard !item.tombstoned else {
+            return []
+        }
+
+        var capabilities: NSFileProviderItemCapabilities = [.allowsReading, .allowsWriting, .allowsDeleting, .allowsReparenting, .allowsRenaming]
+        if item.kind == "file" && !item.dirty {
+            capabilities.insert(Self.allowsEvictingCapability)
+        }
+        return capabilities
+    }
+
+    public var contentPolicy: NSFileProviderContentPolicy {
+        item.dirty ? .downloadEagerlyAndKeepDownloaded : .downloadLazily
+    }
+
+    public var isUploaded: Bool {
+        !item.dirty
+    }
+
+    public var isUploading: Bool {
+        false
+    }
+
+    public var isMostRecentVersionDownloaded: Bool {
+        true
     }
 
     private static func versionComponent(primary: String, fallback: String) -> Data {

@@ -180,6 +180,7 @@ public struct SyncProjectScanResult: Codable, Sendable {
     public var items: [SyncItem]
     public var created: Int
     public var updated: Int
+    public var deleted: Int?
     public var skipped: Int
 }
 

@@ -357,6 +357,7 @@ func TestSyncProjectScanCatalogsDirectNASFiles(t *testing.T) {
 	var scan struct {
 		Items   []models.SyncItem `json:"items"`
 		Created int               `json:"created"`
+		Deleted int               `json:"deleted"`
 		Skipped int               `json:"skipped"`
 	}
 	decodeSyncResponse(t, response, &scan)
@@ -396,6 +397,27 @@ func TestSyncProjectScanCatalogsDirectNASFiles(t *testing.T) {
 	}
 	if file == nil || file.Revision != 2 {
 		t.Fatalf("expected edited file revision 2, got %#v", file)
+	}
+
+	if err := os.Remove(filepath.Join(projectRoot, "Folder", "nas-drop.txt")); err != nil {
+		t.Fatalf("delete nas file: %v", err)
+	}
+	response = doSyncJSON(t, handler, http.MethodPost, "/api/sync/projects/"+project.ID+"/scan", nil, helper.ID, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("scan deleted project file: got %d: %s", response.Code, response.Body.String())
+	}
+	decodeSyncResponse(t, response, &scan)
+	if scan.Deleted != 1 {
+		t.Fatalf("expected one deleted item, got %#v", scan)
+	}
+	var deletedFile *models.SyncItem
+	for i := range scan.Items {
+		if scan.Items[i].RelativePath == "Folder/nas-drop.txt" {
+			deletedFile = &scan.Items[i]
+		}
+	}
+	if deletedFile == nil || !deletedFile.Tombstoned || deletedFile.Revision != 3 {
+		t.Fatalf("expected tombstoned revision 3 item, got %#v", deletedFile)
 	}
 
 	var listed struct {

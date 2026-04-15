@@ -36,8 +36,14 @@ final class RoughdashEnumerator: NSObject, NSFileProviderEnumerator {
     ) {
         let snapshot = RoughdashExtensionStorage.readSnapshot(for: domain)
         let items = providerItems(from: snapshot)
-        logger.info("Enumerating \(items.count, privacy: .public) changed items for \(self.containerIdentifier.rawValue, privacy: .public)")
+        let deletedIdentifiers = snapshot.items
+            .filter(\.tombstoned)
+            .map { NSFileProviderItemIdentifier($0.id) }
+        logger.info("Enumerating \(items.count, privacy: .public) changed items and \(deletedIdentifiers.count, privacy: .public) deletes for \(self.containerIdentifier.rawValue, privacy: .public)")
         observer.didUpdate(items)
+        if !deletedIdentifiers.isEmpty {
+            observer.didDeleteItems(withIdentifiers: deletedIdentifiers)
+        }
         observer.finishEnumeratingChanges(upTo: Self.syncAnchor(for: snapshot), moreComing: false)
     }
 
