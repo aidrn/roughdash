@@ -10,6 +10,7 @@ final class HelperAppState {
     private let logger = Logger(subsystem: "com.roughdash.helper", category: "app-state")
     private var selectedVolumeBookmark: Data?
     private var selectedVolumeSecurityScopeActive = false
+    private var launchArgumentsHandled = false
 
     var serverURL = "http://localhost:8420"
     var helperID = ""
@@ -112,10 +113,18 @@ final class HelperAppState {
     }
 
     func handleLaunchArguments() async {
-        guard CommandLine.arguments.contains("--register-selected-volume") else {
+        guard !launchArgumentsHandled else {
             return
         }
-        await registerFileProviderDomain()
+        launchArgumentsHandled = true
+
+        let arguments = CommandLine.arguments
+        if arguments.contains("--reset-file-provider-domain") {
+            await resetFileProviderDomain()
+        }
+        if arguments.contains("--register-selected-volume") {
+            await registerFileProviderDomain()
+        }
     }
 
     func refreshFileProviderFromLocalState() async {
@@ -228,6 +237,23 @@ final class HelperAppState {
         let storage = HelperStorage(fileProviderStateDirectoryURL: stateDirectoryURL)
         try storage.writeSnapshot(snapshot)
         logger.info("Saved File Provider state snapshot to \(stateDirectoryURL.path, privacy: .public)")
+    }
+
+    private func resetFileProviderDomain() async {
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            let removedCount = try await FileProviderDomainRegistrar().removeRoughdashDomains(volumeUUID: volumeCheck?.volumeUUID)
+            domainIdentifier = ""
+            statusMessage = "Removed \(removedCount) Roughdash File Provider domain(s)."
+            persistState()
+            logger.info("Removed \(removedCount, privacy: .public) Roughdash File Provider domain(s)")
+        } catch {
+            statusMessage = Self.describe(error)
+            persistState()
+            logger.error("Could not remove Roughdash File Provider domain: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func notifyFileProviderCatalogChanged() async {

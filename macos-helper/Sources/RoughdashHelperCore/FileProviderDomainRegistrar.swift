@@ -78,6 +78,20 @@ public struct FileProviderDomainRegistrar: Sendable {
         }
     }
 
+    public func removeRoughdashDomains(volumeUUID: String? = nil) async throws -> Int {
+        guard #available(macOS 15.0, *) else {
+            throw FileProviderDomainRegistrarError.externalVolumeDomainsRequireMacOS15
+        }
+
+        let domains = try await domains().domains
+        var removedCount = 0
+        for domain in domains where isRoughdashDomain(domain, volumeUUID: volumeUUID) {
+            try await remove(domain)
+            removedCount += 1
+        }
+        return removedCount
+    }
+
     @available(macOS 15.0, *)
     private func ensureEligible(_ volumeURL: URL) throws {
         let result = try NSFileProviderManager.checkDomainsCanBeStoredOnVolume(at: volumeURL)
@@ -158,6 +172,51 @@ public struct FileProviderDomainRegistrar: Sendable {
     }
 
     @available(macOS 15.0, *)
+    private func domains() async throws -> FileProviderDomainsBox {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<FileProviderDomainsBox, Error>) in
+            NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: FileProviderDomainsBox(domains))
+                }
+            }
+        }
+    }
+
+    @available(macOS 15.0, *)
+    private func remove(_ domain: NSFileProviderDomain) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            NSFileProviderManager.remove(domain) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    @available(macOS 15.0, *)
+    private func isRoughdashDomain(_ domain: NSFileProviderDomain, volumeUUID: String?) -> Bool {
+        let isRoughdash = domain.displayName == displayName
+            || domain.identifier.rawValue.hasPrefix("roughdash-")
+            || (domain.userInfo?["roughdash"] as? String) == "true"
+        guard isRoughdash else {
+            return false
+        }
+
+        guard let volumeUUID, !volumeUUID.isEmpty else {
+            return true
+        }
+
+        if let userInfoVolumeUUID = domain.userInfo?["volumeUUID"] as? String {
+            return userInfoVolumeUUID.caseInsensitiveCompare(volumeUUID) == .orderedSame
+        }
+        return domain.volumeUUID?.uuidString.caseInsensitiveCompare(volumeUUID) == .orderedSame
+    }
+
+    @available(macOS 15.0, *)
     public static func describeUnsupportedReason(_ reason: NSFileProviderVolumeUnsupportedReason) -> String {
         var values: [String] = []
         if reason.contains(.nonAPFS) { values.append("non-APFS") }
@@ -172,5 +231,13 @@ public struct FileProviderDomainRegistrar: Sendable {
     private static func isFeatureUnsupported(_ error: Error) -> Bool {
         let nsError = error as NSError
         return nsError.domain == NSCocoaErrorDomain && nsError.code == NSFeatureUnsupportedError
+    }
+}
+
+private final class FileProviderDomainsBox: @unchecked Sendable {
+    let domains: [NSFileProviderDomain]
+
+    init(_ domains: [NSFileProviderDomain]) {
+        self.domains = domains
     }
 }
