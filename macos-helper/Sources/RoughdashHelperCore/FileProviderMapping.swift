@@ -33,7 +33,23 @@ public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
         item.modTime
     }
 
+    public var itemVersion: NSFileProviderItemVersion {
+        NSFileProviderItemVersion(
+            contentVersion: Self.versionComponent(primary: item.contentHash, fallback: "content:\(item.revision)"),
+            metadataVersion: Self.versionComponent(primary: item.metadataHash, fallback: "metadata:\(item.revision)")
+        )
+    }
+
     public var capabilities: NSFileProviderItemCapabilities {
         item.tombstoned ? [] : [.allowsReading, .allowsWriting, .allowsDeleting, .allowsReparenting, .allowsRenaming]
+    }
+
+    private static func versionComponent(primary: String, fallback: String) -> Data {
+        let selected = primary.isEmpty ? fallback : primary
+        let data = Data(selected.utf8)
+        guard !data.isEmpty else {
+            return Data("0".utf8)
+        }
+        return data.count <= 128 ? data : Data(data.prefix(128))
     }
 }

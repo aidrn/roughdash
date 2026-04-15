@@ -45,7 +45,23 @@ public final class RoughdashProjectProviderItem: NSObject, NSFileProviderItem {
         project.updatedAt
     }
 
+    public var itemVersion: NSFileProviderItemVersion {
+        let version = "project:\(project.id):\(Int64(project.updatedAt.timeIntervalSince1970))"
+        return NSFileProviderItemVersion(
+            contentVersion: Self.versionComponent(version),
+            metadataVersion: Self.versionComponent(version)
+        )
+    }
+
     public var capabilities: NSFileProviderItemCapabilities {
         project.enabled ? [.allowsReading, .allowsWriting] : [.allowsReading]
+    }
+
+    private static func versionComponent(_ value: String) -> Data {
+        let data = Data(value.utf8)
+        guard !data.isEmpty else {
+            return Data("0".utf8)
+        }
+        return data.count <= 128 ? data : Data(data.prefix(128))
     }
 }

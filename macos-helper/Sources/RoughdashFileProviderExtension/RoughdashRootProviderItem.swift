@@ -13,5 +13,11 @@ final class RoughdashRootProviderItem: NSObject, NSFileProviderItem {
     var parentItemIdentifier: NSFileProviderItemIdentifier { .rootContainer }
     var filename: String { domain.displayName }
     var contentType: UTType { .folder }
+    var itemVersion: NSFileProviderItemVersion {
+        NSFileProviderItemVersion(
+            contentVersion: Data("roughdash-root-v1".utf8),
+            metadataVersion: Data("roughdash-root-v1".utf8)
+        )
+    }
     var capabilities: NSFileProviderItemCapabilities { [.allowsReading] }
 }
