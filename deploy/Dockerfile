@@ -1,20 +1,22 @@
-FROM node:24-bookworm AS web-build
+FROM --platform=$BUILDPLATFORM node:24-bookworm AS web-build
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm install --include=dev --no-audit --no-fund
 COPY web ./
 RUN npm run build
 
-FROM golang:1.26-bookworm AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS go-build
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
 COPY --from=web-build /app/web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/roughdashd ./cmd/roughdashd
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/roughdash-helper ./cmd/roughdash-helper
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/roughdashd ./cmd/roughdashd
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/roughdash-helper ./cmd/roughdash-helper
 
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
