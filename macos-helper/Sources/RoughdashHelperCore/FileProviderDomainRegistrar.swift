@@ -63,7 +63,7 @@ public struct FileProviderDomainRegistrar: Sendable {
             ],
             volumeURL: volumeURL
         )
-        externalDomain.supportsSyncingTrash = true
+        externalDomain.supportsSyncingTrash = false
 
         do {
             try await add(externalDomain)
@@ -75,7 +75,7 @@ public struct FileProviderDomainRegistrar: Sendable {
             )
         } catch {
             if Self.isFeatureUnsupported(error) {
-                throw FileProviderDomainRegistrarError.externalVolumeDomainUnsupported("NSFeatureUnsupportedError. Roughdash will not fall back to standard CloudStorage because the sync domain must live on the selected SSD.")
+                throw FileProviderDomainRegistrarError.externalVolumeDomainUnsupported("\(Self.describe(error)). Roughdash will not fall back to standard CloudStorage because the sync domain must live on the selected SSD.")
             }
             throw error
         }
@@ -215,6 +215,23 @@ public struct FileProviderDomainRegistrar: Sendable {
     private static func isFeatureUnsupported(_ error: Error) -> Bool {
         let nsError = error as NSError
         return nsError.domain == NSCocoaErrorDomain && nsError.code == NSFeatureUnsupportedError
+    }
+
+    private static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        var parts = [
+            error.localizedDescription,
+            "domain=\(nsError.domain)",
+            "code=\(nsError.code)"
+        ]
+        if !nsError.userInfo.isEmpty {
+            let details = nsError.userInfo
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: ", ")
+            parts.append("userInfo={\(details)}")
+        }
+        return parts.joined(separator: " | ")
     }
 }
 

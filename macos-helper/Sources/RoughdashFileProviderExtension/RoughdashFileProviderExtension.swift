@@ -29,7 +29,7 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         if identifier == .rootContainer {
             completionHandler(RoughdashRootProviderItem(domain: domain), nil)
         } else if identifier == .trashContainer {
-            completionHandler(RoughdashTrashProviderItem(), nil)
+            completionHandler(nil, NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError))
         } else if let projectID = RoughdashFileProviderIdentifiers.projectID(from: identifier),
                   let project = snapshot.projects.first(where: { $0.id == projectID && $0.enabled }) {
             completionHandler(RoughdashProjectProviderItem(project: project), nil)
@@ -252,7 +252,10 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
     }
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        RoughdashEnumerator(containerIdentifier: containerItemIdentifier, domain: domain, catalog: catalog)
+        if containerItemIdentifier == .trashContainer {
+            throw NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
+        }
+        return RoughdashEnumerator(containerIdentifier: containerItemIdentifier, domain: domain, catalog: catalog)
     }
 
     private static func isDirectoryCreate(itemTemplate: NSFileProviderItem, contents url: URL?) -> Bool {
@@ -382,6 +385,13 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
             }
         }
         return NSFileProviderError(.cannotSynchronize)
+    }
+}
+
+@available(macOS 15.0, *)
+extension RoughdashFileProviderExtension: NSFileProviderExternalVolumeHandling {
+    func shouldConnectExternalDomain(completionHandler: @escaping (Error?) -> Void) {
+        completionHandler(nil)
     }
 }
 
