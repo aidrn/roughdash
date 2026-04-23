@@ -58,27 +58,43 @@ final class RoughdashEnumerator: NSObject, NSFileProviderEnumerator {
         }
 
         if containerIdentifier == .workingSet {
-            return projectItems(from: snapshot) + snapshot.items
-                .filter { !$0.tombstoned }
-                .map { RoughdashProviderItem(item: $0) }
+            return projectItems(from: snapshot) + providerItems(snapshot.items.filter { !$0.tombstoned }, snapshot: snapshot)
         }
 
         if let projectID = RoughdashFileProviderIdentifiers.projectID(from: containerIdentifier) {
-            return snapshot.items
-                .filter { $0.projectId == projectID && $0.parentId == "root" && !$0.tombstoned }
-                .map { RoughdashProviderItem(item: $0) }
+            return providerItems(
+                snapshot.items.filter { $0.projectId == projectID && $0.parentId == "root" && !$0.tombstoned },
+                snapshot: snapshot
+            )
         }
 
         let parentID = containerIdentifier.rawValue
-        return snapshot.items
-            .filter { $0.parentId == parentID && !$0.tombstoned }
-            .map { RoughdashProviderItem(item: $0) }
+        return providerItems(
+            snapshot.items.filter { $0.parentId == parentID && !$0.tombstoned },
+            snapshot: snapshot
+        )
     }
 
     private func projectItems(from snapshot: HelperSnapshot) -> [NSFileProviderItem] {
         snapshot.projects
             .filter(\.enabled)
-            .map { RoughdashProjectProviderItem(project: $0) }
+            .map { project in
+                RoughdashProjectProviderItem(
+                    project: project,
+                    childCount: snapshot.items.filter { $0.projectId == project.id && $0.parentId == "root" && !$0.tombstoned }.count
+                )
+            }
+    }
+
+    private func providerItems(_ items: [SyncItem], snapshot: HelperSnapshot) -> [NSFileProviderItem] {
+        items.map { item in
+            RoughdashProviderItem(
+                item: item,
+                childCount: item.kind == "directory"
+                    ? snapshot.items.filter { $0.parentId == item.id && !$0.tombstoned }.count
+                    : nil
+            )
+        }
     }
 
     private static func syncAnchor(for snapshot: HelperSnapshot) -> NSFileProviderSyncAnchor {

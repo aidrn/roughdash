@@ -20,9 +20,11 @@ public enum RoughdashFileProviderIdentifiers {
 
 public final class RoughdashProjectProviderItem: NSObject, NSFileProviderItem {
     private let project: SyncProject
+    private let childCount: Int
 
-    public init(project: SyncProject) {
+    public init(project: SyncProject, childCount: Int = 0) {
         self.project = project
+        self.childCount = childCount
     }
 
     public var itemIdentifier: NSFileProviderItemIdentifier {
@@ -43,6 +45,10 @@ public final class RoughdashProjectProviderItem: NSObject, NSFileProviderItem {
 
     public var contentModificationDate: Date? {
         project.updatedAt
+    }
+
+    public var childItemCount: NSNumber? {
+        NSNumber(value: childCount)
     }
 
     public var itemVersion: NSFileProviderItemVersion {

@@ -4,10 +4,12 @@ import UniformTypeIdentifiers
 
 public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
     private let item: SyncItem
+    private let childCount: Int?
     private static let allowsEvictingCapability = NSFileProviderItemCapabilities(rawValue: 1 << 6)
 
-    public init(item: SyncItem) {
+    public init(item: SyncItem, childCount: Int? = nil) {
         self.item = item
+        self.childCount = childCount
     }
 
     public var itemIdentifier: NSFileProviderItemIdentifier {
@@ -32,6 +34,13 @@ public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
 
     public var contentModificationDate: Date? {
         item.modTime
+    }
+
+    public var childItemCount: NSNumber? {
+        guard item.kind == "directory", let childCount else {
+            return nil
+        }
+        return NSNumber(value: childCount)
     }
 
     public var itemVersion: NSFileProviderItemVersion {
@@ -66,7 +75,7 @@ public final class RoughdashProviderItem: NSObject, NSFileProviderItem {
     }
 
     public var isMostRecentVersionDownloaded: Bool {
-        true
+        item.kind == "directory" || item.dirty
     }
 
     private static func versionComponent(primary: String, fallback: String) -> Data {

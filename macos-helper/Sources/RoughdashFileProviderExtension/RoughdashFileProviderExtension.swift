@@ -32,9 +32,23 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
             completionHandler(nil, NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError))
         } else if let projectID = RoughdashFileProviderIdentifiers.projectID(from: identifier),
                   let project = snapshot.projects.first(where: { $0.id == projectID && $0.enabled }) {
-            completionHandler(RoughdashProjectProviderItem(project: project), nil)
+            completionHandler(
+                RoughdashProjectProviderItem(
+                    project: project,
+                    childCount: snapshot.items.filter { $0.projectId == projectID && $0.parentId == "root" && !$0.tombstoned }.count
+                ),
+                nil
+            )
         } else if let item = snapshot.items.first(where: { $0.id == identifier.rawValue && !$0.tombstoned }) {
-            completionHandler(RoughdashProviderItem(item: item), nil)
+            completionHandler(
+                RoughdashProviderItem(
+                    item: item,
+                    childCount: item.kind == "directory"
+                        ? snapshot.items.filter { $0.parentId == item.id && !$0.tombstoned }.count
+                        : nil
+                ),
+                nil
+            )
         } else {
             logger.error("No File Provider item found for \(identifier.rawValue, privacy: .public)")
             completionHandler(nil, NSFileProviderError(.noSuchItem))
@@ -111,6 +125,16 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                     throw NSFileProviderError(.notAuthenticated)
                 }
 
+                if let existing = Self.existingProviderItem(
+                    for: parentIdentifier,
+                    filename: filename,
+                    snapshot: snapshot
+                ) {
+                    logger.info("Accepted File Provider import for existing item \(filename, privacy: .public)")
+                    creation.complete(existing, [], false, nil)
+                    return
+                }
+
                 let parent = try Self.uploadParentContext(
                     for: parentIdentifier,
                     filename: filename,
@@ -132,7 +156,12 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                     await signalWorkingSetChanged()
 
                     logger.info("Created File Provider directory \(created.directory.item.id, privacy: .public) at \(created.directory.item.relativePath, privacy: .public)")
-                    creation.complete(RoughdashProviderItem(item: created.directory.item), [], false, nil)
+                    creation.complete(
+                        RoughdashProviderItem(item: created.directory.item, childCount: 0),
+                        [],
+                        false,
+                        nil
+                    )
                     return
                 }
 
@@ -346,6 +375,51 @@ final class RoughdashFileProviderExtension: NSObject, NSFileProviderReplicatedEx
             parentID: parent.id,
             relativePath: "\(parent.relativePath)/\(cleanName)"
         )
+    }
+
+    private static func existingProviderItem(
+        for parentIdentifier: NSFileProviderItemIdentifier,
+        filename: String,
+        snapshot: HelperSnapshot
+    ) -> NSFileProviderItem? {
+        let cleanName = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else {
+            return nil
+        }
+
+        if parentIdentifier == .rootContainer,
+           let project = snapshot.projects.first(where: { $0.enabled && $0.name == cleanName }) {
+            return RoughdashProjectProviderItem(
+                project: project,
+                childCount: snapshot.items.filter { $0.projectId == project.id && $0.parentId == "root" && !$0.tombstoned }.count
+            )
+        }
+
+        if let projectID = RoughdashFileProviderIdentifiers.projectID(from: parentIdentifier),
+           let existing = snapshot.items.first(where: {
+               $0.projectId == projectID && $0.parentId == "root" && $0.name == cleanName && !$0.tombstoned
+           }) {
+            return RoughdashProviderItem(
+                item: existing,
+                childCount: existing.kind == "directory"
+                    ? snapshot.items.filter { $0.parentId == existing.id && !$0.tombstoned }.count
+                    : nil
+            )
+        }
+
+        if let parent = snapshot.items.first(where: { $0.id == parentIdentifier.rawValue && !$0.tombstoned }),
+           let existing = snapshot.items.first(where: {
+               $0.parentId == parent.id && $0.name == cleanName && !$0.tombstoned
+           }) {
+            return RoughdashProviderItem(
+                item: existing,
+                childCount: existing.kind == "directory"
+                    ? snapshot.items.filter { $0.parentId == existing.id && !$0.tombstoned }.count
+                    : nil
+            )
+        }
+
+        return nil
     }
 
     private func signalWorkingSetChanged() async {
