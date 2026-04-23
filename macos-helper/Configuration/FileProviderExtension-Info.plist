@@ -22,6 +22,8 @@
 	<string>$(ROUGHDDASH_APP_GROUP_IDENTIFIER)</string>
 	<key>NSExtension</key>
 	<dict>
+		<key>NSExtensionFileProviderAllowsExternalVolumes</key>
+		<true/>
 		<key>NSExtensionFileProviderDocumentGroup</key>
 		<string>$(ROUGHDDASH_APP_GROUP_IDENTIFIER)</string>
 		<key>NSExtensionFileProviderSupportsEnumeration</key>
