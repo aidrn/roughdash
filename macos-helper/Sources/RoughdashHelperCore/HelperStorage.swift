@@ -140,6 +140,19 @@ public struct HelperStorage {
         }
     }
 
+    public func readExternalVolumeProbeReport() throws -> FileProviderExternalVolumeProbeReport? {
+        guard FileManager.default.fileExists(atPath: externalVolumeProbeReportURL.path) else {
+            return nil
+        }
+        let data = try Data(contentsOf: externalVolumeProbeReportURL)
+        return try JSONDecoder.roughdash.decode(FileProviderExternalVolumeProbeReport.self, from: data)
+    }
+
+    public func writeExternalVolumeProbeReport(_ report: FileProviderExternalVolumeProbeReport) throws {
+        let data = try JSONEncoder.roughdash.encode(report)
+        try write(data, to: externalVolumeProbeReportURL)
+    }
+
     public func writeVolumeMetadata(_ snapshot: HelperSnapshot, toVolumeAt volumeURL: URL) throws {
         try Self.writeVolumeMetadata(snapshot, toVolumeAt: volumeURL)
     }
@@ -166,6 +179,10 @@ public struct HelperStorage {
 
     private var snapshotURL: URL {
         roughdashDirectory.appendingPathComponent("state.json")
+    }
+
+    public var externalVolumeProbeReportURL: URL {
+        roughdashDirectory.appendingPathComponent("external-volume-probe.json")
     }
 
     private var legacySnapshotURL: URL? {

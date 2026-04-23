@@ -22,6 +22,7 @@ final class HelperAppState {
     var projects: [SyncProject] = []
     var items: [SyncItem] = []
     var conflicts: [SyncConflict] = []
+    var externalVolumeProbeReport: FileProviderExternalVolumeProbeReport?
     var syncDevice: SyncDevice?
     var connectionMode: ConnectionMode = .lanDirect
     var statusMessage = "Pair with Roughdash and select a dedicated APFS encrypted SSD."
@@ -139,6 +140,9 @@ final class HelperAppState {
         if arguments.contains("--register-selected-volume") {
             await registerFileProviderDomain()
         }
+        if arguments.contains("--probe-selected-volume") {
+            await runExternalVolumeProbe()
+        }
     }
 
     func refreshFileProviderFromLocalState() async {
@@ -173,6 +177,7 @@ final class HelperAppState {
         if let message = snapshot.statusMessage {
             statusMessage = message
         }
+        externalVolumeProbeReport = try? HelperStorage().readExternalVolumeProbeReport()
         selectedVolumeBookmark = snapshot.selectedVolumeBookmark
         if let url = resolveSelectedVolumeURL(from: snapshot) {
             selectedVolumeURL = url
@@ -257,6 +262,25 @@ final class HelperAppState {
         conflicts = try await api.listConflicts()
         if let volumeUUID = volumeCheck?.volumeUUID {
             syncDevice = try await api.listDevices().first(where: { $0.ssdVolumeUuid == volumeUUID })
+        }
+    }
+
+    func runExternalVolumeProbe() async {
+        isBusy = true
+        defer { isBusy = false }
+
+        let report = await FileProviderExternalVolumeProbe().run(on: selectedVolumeURL)
+        externalVolumeProbeReport = report
+        statusMessage = report.summary
+        persistState()
+
+        do {
+            let storage = try HelperStorage()
+            try storage.writeExternalVolumeProbeReport(report)
+            logger.info("Saved external-volume probe report to \(storage.externalVolumeProbeReportURL.path, privacy: .public)")
+        } catch {
+            statusMessage += " Report save failed: \(Self.describe(error))"
+            logger.error("Could not save external-volume probe report: \(Self.describe(error), privacy: .public)")
         }
     }
 

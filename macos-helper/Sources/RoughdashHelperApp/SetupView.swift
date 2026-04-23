@@ -37,6 +37,22 @@ struct SetupView: View {
                 }
             }
 
+            Section("External-Volume Probe") {
+                Button("Run External-Volume Probe") {
+                    Task { await state.runExternalVolumeProbe() }
+                }
+                .disabled(state.selectedVolumeURL == nil || state.isBusy)
+
+                if let report = state.externalVolumeProbeReport {
+                    Text(report.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Last probe: \(report.createdAt.formatted(date: .abbreviated, time: .standard))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Status") {
                 Text(state.statusMessage)
                     .foregroundStyle(.secondary)
