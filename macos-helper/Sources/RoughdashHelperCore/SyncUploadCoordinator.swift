@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 public struct SyncUploadResult: Sendable {
     public var device: SyncDevice
@@ -15,6 +16,7 @@ public struct SyncDirectoryCreateResult: Sendable {
 public actor SyncUploadCoordinator {
     private let api: RoughdashAPIClient
     private let transferClient: TransferClient
+    private let logger = Logger(subsystem: "com.roughdash.helper", category: "sync-upload")
 
     public init(api: RoughdashAPIClient) {
         self.api = api
@@ -35,20 +37,45 @@ public actor SyncUploadCoordinator {
             throw SyncUploadError.unsupportedItem
         }
 
-        let device = try await ensureDevice(snapshot: snapshot, volumeUUID: volumeUUID)
+        logger.info("Starting existing-file sync upload for \(item.relativePath, privacy: .public): \(Self.localPathState(fileURL), privacy: .public)")
+        let device: SyncDevice
+        do {
+            device = try await ensureDevice(snapshot: snapshot, volumeUUID: volumeUUID)
+        } catch {
+            logger.error("Existing-file sync upload failed while ensuring device for \(item.relativePath, privacy: .public): \(Self.describe(error), privacy: .public)")
+            throw error
+        }
         guard let deviceID = device.id else {
             throw APIError.invalidResponse
         }
-        let uploadBase = try await uploadBaseItem(for: item, baseContentHash: baseContentHash)
-        let lease = try await api.acquireLease(deviceID: deviceID, volumeUUID: volumeUUID, force: forceLease)
-        let completed = try await transferClient.uploadFile(
-            projectID: uploadBase.projectId,
-            deviceID: deviceID,
-            itemID: uploadBase.id,
-            relativePath: uploadBase.relativePath,
-            baseRevision: uploadBase.revision,
-            fileURL: fileURL
-        )
+        let uploadBase: SyncItem
+        do {
+            uploadBase = try await uploadBaseItem(for: item, baseContentHash: baseContentHash)
+        } catch {
+            logger.error("Existing-file sync upload failed while checking current catalog item for \(item.relativePath, privacy: .public): \(Self.describe(error), privacy: .public)")
+            throw error
+        }
+        let lease: SyncLease
+        do {
+            lease = try await api.acquireLease(deviceID: deviceID, volumeUUID: volumeUUID, force: forceLease)
+        } catch {
+            logger.error("Existing-file sync upload failed while acquiring lease for \(item.relativePath, privacy: .public): \(Self.describe(error), privacy: .public)")
+            throw error
+        }
+        let completed: CompletedTransfer
+        do {
+            completed = try await transferClient.uploadFile(
+                projectID: uploadBase.projectId,
+                deviceID: deviceID,
+                itemID: uploadBase.id,
+                relativePath: uploadBase.relativePath,
+                baseRevision: uploadBase.revision,
+                fileURL: fileURL
+            )
+        } catch {
+            logger.error("Existing-file sync upload failed during transfer for \(item.relativePath, privacy: .public): \(Self.describe(error), privacy: .public) | \(Self.localPathState(fileURL), privacy: .public)")
+            throw error
+        }
         return SyncUploadResult(device: device, lease: lease, completed: completed)
     }
 
@@ -68,23 +95,48 @@ public actor SyncUploadCoordinator {
             throw SyncUploadError.unsupportedItem
         }
 
-        let device = try await ensureDevice(snapshot: snapshot, volumeUUID: volumeUUID)
+        logger.info("Starting new-file sync upload for \(relativePath, privacy: .public): \(Self.localPathState(fileURL), privacy: .public)")
+        let device: SyncDevice
+        do {
+            device = try await ensureDevice(snapshot: snapshot, volumeUUID: volumeUUID)
+        } catch {
+            logger.error("New-file sync upload failed while ensuring device for \(relativePath, privacy: .public): \(Self.describe(error), privacy: .public)")
+            throw error
+        }
         guard let deviceID = device.id else {
             throw APIError.invalidResponse
         }
-        let siblings = try await api.listItems(projectID: projectID, parentID: parentID)
+        let siblings: [SyncItem]
+        do {
+            siblings = try await api.listItems(projectID: projectID, parentID: parentID)
+        } catch {
+            logger.error("New-file sync upload failed while listing siblings for \(relativePath, privacy: .public): \(Self.describe(error), privacy: .public)")
+            throw error
+        }
         if siblings.contains(where: { $0.relativePath == relativePath && !$0.tombstoned }) {
             throw SyncUploadError.itemAlreadyExists
         }
-        let lease = try await api.acquireLease(deviceID: deviceID, volumeUUID: volumeUUID, force: forceLease)
-        let completed = try await transferClient.uploadFile(
-            projectID: projectID,
-            deviceID: deviceID,
-            itemID: nil,
-            relativePath: relativePath,
-            baseRevision: 0,
-            fileURL: fileURL
-        )
+        let lease: SyncLease
+        do {
+            lease = try await api.acquireLease(deviceID: deviceID, volumeUUID: volumeUUID, force: forceLease)
+        } catch {
+            logger.error("New-file sync upload failed while acquiring lease for \(relativePath, privacy: .public): \(Self.describe(error), privacy: .public)")
+            throw error
+        }
+        let completed: CompletedTransfer
+        do {
+            completed = try await transferClient.uploadFile(
+                projectID: projectID,
+                deviceID: deviceID,
+                itemID: nil,
+                relativePath: relativePath,
+                baseRevision: 0,
+                fileURL: fileURL
+            )
+        } catch {
+            logger.error("New-file sync upload failed during transfer for \(relativePath, privacy: .public): \(Self.describe(error), privacy: .public) | \(Self.localPathState(fileURL), privacy: .public)")
+            throw error
+        }
         return SyncUploadResult(device: device, lease: lease, completed: completed)
     }
 
@@ -164,6 +216,23 @@ public actor SyncUploadCoordinator {
         return siblings.first(where: { candidate in
             candidate.id == item.id || candidate.relativePath == item.relativePath
         })
+    }
+
+    private static func localPathState(_ fileURL: URL) -> String {
+        let fileManager = FileManager.default
+        var isDirectory = ObjCBool(false)
+        let exists = fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDirectory)
+        let readable = fileManager.isReadableFile(atPath: fileURL.path)
+        let writable = fileManager.isWritableFile(atPath: fileURL.path)
+        let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path)
+        let size = (attributes?[.size] as? NSNumber)?.stringValue ?? "nil"
+        let type = (attributes?[.type] as? FileAttributeType)?.rawValue ?? "nil"
+        return "path=\(fileURL.path) exists=\(exists) isDirectory=\(isDirectory.boolValue) readable=\(readable) writable=\(writable) size=\(size) type=\(type)"
+    }
+
+    private static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "\(error.localizedDescription) (domain=\(nsError.domain), code=\(nsError.code))"
     }
 }
 

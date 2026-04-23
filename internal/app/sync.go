@@ -162,6 +162,9 @@ func (s *Server) handleSyncItemsList(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		if items == nil {
+			items = []models.SyncItem{}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 		return
 	}
@@ -170,6 +173,9 @@ func (s *Server) handleSyncItemsList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if items == nil {
+		items = []models.SyncItem{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

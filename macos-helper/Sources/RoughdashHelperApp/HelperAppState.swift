@@ -360,7 +360,7 @@ final class HelperAppState {
             }
 
             try await signalEnumerator(manager)
-            try await reimportRoot(manager)
+            await reimportProjectRoots(manager)
             logger.info("Requested File Provider refresh for domain \(self.domainIdentifier, privacy: .public)")
         } catch {
             logger.error("Could not refresh File Provider domain \(self.domainIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)")
@@ -386,14 +386,21 @@ final class HelperAppState {
         }
     }
 
-    private func reimportRoot(_ manager: NSFileProviderManager) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            manager.reimportItems(below: .rootContainer) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
+    private func reimportProjectRoots(_ manager: NSFileProviderManager) async {
+        for project in projects where project.enabled {
+            let identifier = RoughdashFileProviderIdentifiers.projectRootIdentifier(projectID: project.id)
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    manager.reimportItems(below: identifier) { error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume()
+                        }
+                    }
                 }
+            } catch {
+                logger.error("Could not reimport File Provider project root \(project.id, privacy: .public): \(Self.describe(error), privacy: .public)")
             }
         }
     }

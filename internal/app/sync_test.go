@@ -275,6 +275,14 @@ func TestSyncHelperCanCreateDirectoryWithLease(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(project.RootPath, "CloudFolder")); err != nil || !info.IsDir() {
 		t.Fatalf("expected directory on NAS, info=%#v err=%v", info, err)
 	}
+
+	response = doSyncJSON(t, handler, http.MethodGet, "/api/sync/projects/"+project.ID+"/items?parentId="+created.Item.ID, nil, helper.ID, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("list empty directory children: got %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"items":[]`) {
+		t.Fatalf("expected empty directory child list to encode as [], got %s", response.Body.String())
+	}
 }
 
 func TestSyncTransferCreatesConflictForStaleBaseRevision(t *testing.T) {

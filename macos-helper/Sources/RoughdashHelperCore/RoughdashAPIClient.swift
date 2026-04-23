@@ -176,7 +176,18 @@ private struct DeviceResponse: Decodable { var device: SyncDevice }
 private struct DevicesResponse: Decodable { var devices: [SyncDevice]? }
 private struct LeaseRequest: Encodable { var ssdVolumeUuid: String; var ttlSeconds: Int; var force: Bool }
 private struct LeaseResponse: Decodable { var lease: SyncLease }
-private struct ItemsResponse: Decodable { var items: [SyncItem] }
+private struct ItemsResponse: Decodable {
+    var items: [SyncItem]
+
+    private enum CodingKeys: String, CodingKey {
+        case items
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        items = try container.decodeIfPresent([SyncItem].self, forKey: .items) ?? []
+    }
+}
 private struct ItemUpsertResponse: Decodable { var item: SyncItem; var revision: SyncRevision? }
 private struct SyncDirectoryRequest: Encodable {
     var deviceId: String
