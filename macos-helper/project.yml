@@ -90,5 +90,6 @@ schemes:
         RoughdashFileProviderUI: all
     run:
       config: Debug
+      executable: RoughdashHelperApp
     archive:
       config: Release
